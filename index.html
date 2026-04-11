@@ -283,11 +283,15 @@
       const [drafts, setDrafts] = useState([]);
       const [expandedDraft, setExpandedDraft] = useState(null);
       const [editDraftBody, setEditDraftBody] = useState('');
+      const [upcomingTouches, setUpcomingTouches] = useState([]);
+      const [staleSphere, setStaleSphere] = useState([]);
+      const [overdueTouches, setOverdueTouches] = useState([]);
 
       useEffect(() => {
         fetchBriefing();
         fetchDrafts();
-        const handleRefresh = () => { fetchBriefing(); fetchDrafts(); };
+        fetchNurtureData();
+        const handleRefresh = () => { fetchBriefing(); fetchDrafts(); fetchNurtureData(); };
         window.addEventListener('crm-data-changed', handleRefresh);
         return () => window.removeEventListener('crm-data-changed', handleRefresh);
       }, []);
@@ -308,6 +312,52 @@
       const fetchDrafts = async () => {
         const { data } = await supabase.from('drafts').select('*, contacts(first_name, last_name, email)').eq('status', 'pending').order('created_at', { ascending: false });
         if (data) setDrafts(data);
+      };
+
+      const fetchNurtureData = async () => {
+        try {
+          const today = new Date().toISOString().split('T')[0];
+          const in30 = new Date(Date.now() + 30*86400000).toISOString().split('T')[0];
+          // Upcoming touches (next 30 days)
+          const { data: touches } = await supabase
+            .from('nurture_touches')
+            .select('*, contacts(first_name, last_name, email, phone)')
+            .eq('status', 'pending')
+            .gte('scheduled_date', today)
+            .lte('scheduled_date', in30)
+            .order('scheduled_date', { ascending: true })
+            .limit(10);
+          if (touches) setUpcomingTouches(touches);
+
+          // Overdue touches
+          const { data: overdue } = await supabase
+            .from('nurture_touches')
+            .select('*, contacts(first_name, last_name)')
+            .eq('status', 'overdue')
+            .order('scheduled_date', { ascending: true })
+            .limit(10);
+          if (overdue) setOverdueTouches(overdue);
+
+          // Stale sphere: contacts with no contact in 90+ days
+          const staleDate = new Date(Date.now() - 90*86400000).toISOString();
+          const { data: stale } = await supabase
+            .from('contacts')
+            .select('id, first_name, last_name, contact_type, last_contact_date, preferred_channel')
+            .in('contact_type', ['sphere', 'past_client', 'client', 'referral_partner'])
+            .or(`last_contact_date.is.null,last_contact_date.lt.${staleDate}`)
+            .order('last_contact_date', { ascending: true, nullsFirst: true })
+            .limit(10);
+          if (stale) setStaleSphere(stale);
+        } catch (err) { console.error('Nurture fetch error:', err); }
+      };
+
+      const completeTouchAction = async (touchId, action) => {
+        if (action === 'skip') {
+          await supabase.from('nurture_touches').update({ status: 'skipped', updated_at: new Date().toISOString() }).eq('id', touchId);
+        } else if (action === 'complete') {
+          await supabase.from('nurture_touches').update({ status: 'completed', completed_at: new Date().toISOString(), updated_at: new Date().toISOString() }).eq('id', touchId);
+        }
+        fetchNurtureData();
       };
 
       const approveDraft = async (id) => {
@@ -349,7 +399,7 @@
       const gci = b.gci || {};
       const pipeline = b.pipeline || {};
 
-      const alertCount = staleHot.length + overdue.length + closingSoon.length;
+      const alertCount = staleHot.length + overdue.length + closingSoon.length + overdueTouches.length + staleSphere.length;
 
       return (
         <div className="flex-1 overflow-y-auto">
@@ -404,6 +454,18 @@
                     <div key={`c${i}`} className="flex items-center gap-2 text-xs">
                       <span className="w-2 h-2 rounded-full flex-shrink-0" style={{background:'#003744'}}></span>
                       <span><strong>{c.client}</strong> closing on {c.closingDate} at {c.property} — status: {c.status}</span>
+                    </div>
+                  ))}
+                  {overdueTouches.map((t, i) => (
+                    <div key={`nt${i}`} className="flex items-center gap-2 text-xs">
+                      <span className="w-2 h-2 rounded-full flex-shrink-0" style={{background:'#B72552'}}></span>
+                      <span><strong>{t.contacts?.first_name} {t.contacts?.last_name}</strong> — overdue {t.touch_type.replace('_', ' ')}: {t.title} (was {t.scheduled_date})</span>
+                    </div>
+                  ))}
+                  {staleSphere.slice(0, 3).map((s, i) => (
+                    <div key={`ss${i}`} className="flex items-center gap-2 text-xs">
+                      <span className="w-2 h-2 rounded-full flex-shrink-0" style={{background:'#FE8982'}}></span>
+                      <span><strong>{s.first_name} {s.last_name}</strong> — {s.last_contact_date ? `${Math.round((Date.now() - new Date(s.last_contact_date).getTime()) / 86400000)} days since last contact` : 'never contacted'}</span>
                     </div>
                   ))}
                 </div>
@@ -481,6 +543,99 @@
                       </div>
                     </div>
                   ))}
+                </div>
+              </div>
+            )}
+
+            {/* SPHERE NURTURING — Upcoming Touches */}
+            {upcomingTouches.length > 0 && (
+              <div>
+                <h3 className="font-semibold text-sm mb-2 flex items-center gap-2" style={{color:'#003744'}}>
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#003744" strokeWidth="2"><circle cx="12" cy="12" r="10"></circle><path d="M8 14s1.5 2 4 2 4-2 4-2"></path><line x1="9" y1="9" x2="9.01" y2="9"></line><line x1="15" y1="9" x2="15.01" y2="9"></line></svg>
+                  Sphere Nurturing — Next 30 Days ({upcomingTouches.length})
+                </h3>
+                <div className="space-y-2">
+                  {upcomingTouches.map(t => {
+                    const typeColors = {
+                      birthday: {bg:'#FFF0EC', border:'#FE8982', icon:'🎂'},
+                      closing_anniversary: {bg:'#E8F5E9', border:'#2D6A2D', icon:'🏠'},
+                      quarterly_checkin: {bg:'#E0F0F2', border:'#003744', icon:'👋'},
+                      holiday: {bg:'#FFEEE3', border:'#B72552', icon:'🎄'},
+                      market_update: {bg:'#F3E5F5', border:'#7F1330', icon:'📊'},
+                      referral_ask: {bg:'#FFF8E1', border:'#FF8F00', icon:'🤝'},
+                      home_checkup: {bg:'#E0F0F2', border:'#003744', icon:'🔑'},
+                      just_because: {bg:'#FFEEE3', border:'#FE8982', icon:'💌'},
+                      custom: {bg:'#F5F5F5', border:'#666', icon:'📌'}
+                    };
+                    const tc = typeColors[t.touch_type] || typeColors.custom;
+                    const daysUntil = Math.round((new Date(t.scheduled_date + 'T12:00:00') - new Date()) / 86400000);
+                    return (
+                      <div key={t.id} className="glass-card p-3" style={{borderLeft:`3px solid ${tc.border}`, background: tc.bg}}>
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2 mb-0.5">
+                              <span>{tc.icon}</span>
+                              <span className="text-xs font-medium">{t.touch_type.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())}</span>
+                              <span className="text-xs px-1.5 py-0.5 rounded-full" style={{background: daysUntil <= 3 ? '#B72552' : '#003744', color:'white'}}>
+                                {daysUntil === 0 ? 'Today' : daysUntil === 1 ? 'Tomorrow' : `${daysUntil} days`}
+                              </span>
+                              <span className="text-xs px-1.5 py-0.5 rounded-full" style={{background:'#FFEEE3', color:'#7F1330'}}>{t.channel}</span>
+                            </div>
+                            <p className="text-sm font-medium">{t.contacts?.first_name} {t.contacts?.last_name}</p>
+                            <p className="text-xs text-secondary mt-0.5">{t.description}</p>
+                          </div>
+                          <div className="flex gap-1 flex-shrink-0">
+                            <button onClick={() => {
+                              const name = (t.contacts?.first_name || '') + ' ' + (t.contacts?.last_name || '');
+                              const input = document.querySelector('input[placeholder*="Assistant"]');
+                              if (input) { input.value = `Draft a ${t.channel === 'email' ? 'email' : 'message'} to ${name} for their ${t.touch_type.replace(/_/g, ' ')}`; input.focus(); input.dispatchEvent(new Event('input', {bubbles:true})); }
+                            }} className="p-1.5 rounded-lg hover:bg-white" title="Ask Assistant to draft" style={{color:'#003744'}}>
+                              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path></svg>
+                            </button>
+                            <button onClick={() => completeTouchAction(t.id, 'complete')} className="p-1.5 rounded-lg hover:bg-white" title="Mark complete" style={{color:'#2D6A2D'}}>
+                              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="20 6 9 17 4 12"></polyline></svg>
+                            </button>
+                            <button onClick={() => completeTouchAction(t.id, 'skip')} className="p-1.5 rounded-lg hover:bg-white" title="Skip" style={{color:'#7A5A5A'}}>
+                              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="5 12 12 5 19 12"></polyline><line x1="12" y1="19" x2="12" y2="5"></line></svg>
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {/* STALE SPHERE — Needs Attention */}
+            {staleSphere.length > 0 && (
+              <div>
+                <h3 className="font-semibold text-sm mb-2 flex items-center gap-2" style={{color:'#B72552'}}>
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#B72552" strokeWidth="2"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg>
+                  Sphere Going Cold ({staleSphere.length})
+                </h3>
+                <div className="glass-card p-3" style={{borderLeft:'3px solid #B72552'}}>
+                  <div className="space-y-2">
+                    {staleSphere.map((s, i) => {
+                      const daysSince = s.last_contact_date ? Math.round((Date.now() - new Date(s.last_contact_date).getTime()) / 86400000) : null;
+                      return (
+                        <div key={i} className="flex items-center justify-between text-xs">
+                          <div className="flex items-center gap-2">
+                            <span className="w-2 h-2 rounded-full flex-shrink-0" style={{background: daysSince === null ? '#B72552' : daysSince > 180 ? '#B72552' : '#FE8982'}}></span>
+                            <span><strong>{s.first_name} {s.last_name}</strong> <span className="text-secondary">({s.contact_type.replace('_', ' ')})</span></span>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <span className="text-secondary">{daysSince ? `${daysSince} days` : 'never contacted'}</span>
+                            <button onClick={() => {
+                              const input = document.querySelector('input[placeholder*="Assistant"]');
+                              if (input) { input.value = `Draft a check-in email to ${s.first_name} ${s.last_name}`; input.focus(); input.dispatchEvent(new Event('input', {bubbles:true})); }
+                            }} className="px-2 py-0.5 rounded text-xs" style={{background:'#FFEEE3', color:'#7F1330'}}>Draft</button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <p className="text-xs mt-3 italic" style={{color:'#7A5A5A'}}>Tell the Assistant: "Who haven't I talked to in 3 months?" or "Schedule a coffee with the Smiths"</p>
                 </div>
               </div>
             )}
@@ -563,12 +718,12 @@
               <h3 className="font-semibold text-sm mb-2" style={{color:'#003744'}}>What Your Assistant Can Do</h3>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-1">
                 {[
+                  '"Who haven\'t I talked to in 3 months?"',
+                  '"Draft a check-in email to all my stale sphere contacts"',
+                  '"What nurture touches do I have coming up this week?"',
+                  '"Schedule a coffee with the Smiths"',
                   '"Draft an email to Sarah about the inspection"',
-                  '"Text the Millers that the showing is confirmed"',
                   '"What\'s my projected GCI this quarter?"',
-                  '"Who needs follow-up this week?"',
-                  '"Archive the Johnson lead, they went with another agent"',
-                  '"Create a task to call the title company by Friday"',
                   '"Move Sarah to Under Contract and generate milestones"',
                   '"Schedule a showing for Tom at 123 Oak on Thursday at 2pm"'
                 ].map((ex, i) => (
@@ -1732,8 +1887,26 @@
                     </div>
                     <div><label className="text-xs font-medium block mb-1" style={{color:'#7A5A5A'}}>Type</label>
                       <select value={editingContact.contact_type || 'client'} onChange={(e) => setEditingContact({...editingContact, contact_type: e.target.value})} className="input-glass w-full">
-                        {['lead','client','vendor','agent','lender','other'].map(t => <option key={t} value={t}>{t.charAt(0).toUpperCase()+t.slice(1)}</option>)}
+                        {['lead','client','past_client','sphere','vendor','referral_partner','agent','lender','other'].map(t => <option key={t} value={t}>{t.replace(/_/g,' ').replace(/\b\w/g, l => l.toUpperCase())}</option>)}
                       </select>
+                    </div>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div><label className="text-xs font-medium block mb-1" style={{color:'#7A5A5A'}}>Preferred Channel</label>
+                        <select value={editingContact.preferred_channel || 'email'} onChange={(e) => setEditingContact({...editingContact, preferred_channel: e.target.value})} className="input-glass w-full">
+                          {['email','sms','call','in_person'].map(t => <option key={t} value={t}>{t.replace(/_/g,' ').replace(/\b\w/g, l => l.toUpperCase())}</option>)}
+                        </select>
+                      </div>
+                      <div><label className="text-xs font-medium block mb-1" style={{color:'#7A5A5A'}}>Sphere Tier</label>
+                        <select value={editingContact.sphere_tier || 'standard'} onChange={(e) => setEditingContact({...editingContact, sphere_tier: e.target.value})} className="input-glass w-full">
+                          <option value="vip">VIP</option>
+                          <option value="standard">Standard</option>
+                          <option value="casual">Casual</option>
+                        </select>
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div><label className="text-xs font-medium block mb-1" style={{color:'#7A5A5A'}}>Birthday</label><input type="date" value={editingContact.birthday || ''} onChange={(e) => setEditingContact({...editingContact, birthday: e.target.value})} className="input-glass w-full" /></div>
+                      <div><label className="text-xs font-medium block mb-1" style={{color:'#7A5A5A'}}>Anniversary</label><input type="date" value={editingContact.anniversary || ''} onChange={(e) => setEditingContact({...editingContact, anniversary: e.target.value})} className="input-glass w-full" /></div>
                     </div>
                     <div className="flex gap-3 pt-4">
                       <button type="button" onClick={() => setEditingContact(null)} className="btn-secondary flex-1">Cancel</button>
@@ -1761,7 +1934,7 @@
           <div className="flex flex-col sm:flex-row gap-2 mb-4">
             <input type="text" placeholder="Search name, email, phone..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} className="input-glass flex-1" />
             <div className="flex gap-1 flex-wrap">
-              {[['all','All'],['lead','Leads'],['client','Clients'],['vendor','Vendors']].map(([val,label]) => (
+              {[['all','All'],['lead','Leads'],['client','Clients'],['past_client','Past Clients'],['sphere','Sphere'],['vendor','Vendors']].map(([val,label]) => (
                 <button key={val} onClick={() => setFilterType(val)} className="text-xs px-3 py-1.5 rounded-full transition-all" style={filterType === val ? {background:'#7F1330', color:'#fff'} : {background:'#FFEEE3', color:'#7A5A5A'}}>{label} ({typeCounts[val] || 0})</button>
               ))}
             </div>
@@ -1786,7 +1959,7 @@
                   </div>
                   <div><label className="text-xs font-medium block mb-1" style={{color:'#7A5A5A'}}>Type</label>
                     <select value={formData.contact_type} onChange={(e) => setFormData({...formData, contact_type: e.target.value})} className="input-glass w-full">
-                      {['lead','client','vendor','agent','lender','other'].map(t => <option key={t} value={t}>{t.charAt(0).toUpperCase()+t.slice(1)}</option>)}
+                      {['lead','client','past_client','sphere','vendor','referral_partner','agent','lender','other'].map(t => <option key={t} value={t}>{t.replace(/_/g,' ').replace(/\b\w/g, l => l.toUpperCase())}</option>)}
                     </select>
                   </div>
                   <div className="flex gap-3 pt-4">
