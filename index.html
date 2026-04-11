@@ -218,7 +218,7 @@
     const IconDashboard = () => (<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="7" height="7"></rect><rect x="14" y="3" width="7" height="7"></rect><rect x="14" y="14" width="7" height="7"></rect><rect x="3" y="14" width="7" height="7"></rect></svg>);
     const IconPipeline = () => (<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="7" height="5"></rect><rect x="14" y="3" width="7" height="5"></rect><rect x="14" y="10" width="7" height="5"></rect><rect x="3" y="16" width="18" height="5"></rect></svg>);
     const IconTransaction = () => (<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="2" y="3" width="20" height="3"></rect><line x1="2" y1="8" x2="22" y2="8"></line><rect x="2" y="10" width="20" height="8"></rect><rect x="2" y="20" width="20" height="2"></rect></svg>);
-    const IconClients = () => (<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M23 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></svg>);
+    const IconContacts = () => (<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M23 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></svg>);
     const IconComms = () => (<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg>);
     const IconTask = () => (<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="9 11 12 14 22 4"></polyline><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"></path></svg>);
     const IconShowings = () => (<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg>);
@@ -1734,14 +1734,21 @@
         } catch (err) { console.error(err); alert('Error deleting contact'); }
       };
 
+      const getCategory = (type) => {
+        if (['client', 'lead', 'past_client', 'sphere', 'referral_partner'].includes(type)) return 'client';
+        if (type === 'vendor') return 'vendor';
+        if (type === 'contractor') return 'contractor';
+        return 'client';
+      };
+
       const filtered = contacts.filter(c => {
         const nameMatch = `${c.first_name} ${c.last_name} ${c.email || ''} ${c.phone || ''}`.toLowerCase().includes(searchTerm.toLowerCase());
-        const typeMatch = filterType === 'all' || c.contact_type === filterType;
+        const typeMatch = filterType === 'all' || getCategory(c.contact_type) === filterType;
         return nameMatch && typeMatch;
       });
 
-      const typeCounts = { all: contacts.length, lead: 0, client: 0, vendor: 0, agent: 0, lender: 0, other: 0 };
-      contacts.forEach(c => { if (typeCounts[c.contact_type] !== undefined) typeCounts[c.contact_type]++; else typeCounts.other++; });
+      const typeCounts = { all: contacts.length, client: 0, vendor: 0, contractor: 0 };
+      contacts.forEach(c => { typeCounts[getCategory(c.contact_type)]++; });
 
       const formatAddress = (c) => {
         const parts = [c.address_street, c.address_city, c.address_state].filter(Boolean);
@@ -1750,7 +1757,7 @@
       };
 
       const typeColor = (t) => {
-        const map = { lead: '#FFC6BF', client: '#B72552', vendor: '#003744', agent: '#FE8982', lender: '#7F1330', other: '#7A5A5A' };
+        const map = { client: '#B72552', vendor: '#003744', contractor: '#7F1330', lead: '#FFC6BF', past_client: '#B72552', sphere: '#B72552' };
         return map[t] || '#7A5A5A';
       };
 
@@ -1765,7 +1772,7 @@
           <div className="flex-1 flex flex-col p-3 sm:p-6 overflow-hidden min-h-0">
             <button onClick={() => setSelectedContact(null)} className="flex items-center gap-1 text-xs mb-4 hover:underline" style={{color:'#7F1330'}}>
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="15 18 9 12 15 6"></polyline></svg>
-              Back to Clients
+              Back to Contacts
             </button>
 
             <div className="glass-card p-4 sm:p-6 mb-4">
@@ -1776,7 +1783,7 @@
                   </div>
                   <div>
                     <h2 className="text-lg font-semibold">{c.first_name} {c.last_name}</h2>
-                    <span className="text-xs px-2 py-0.5 rounded-full text-white" style={{background: typeColor(c.contact_type)}}>{c.contact_type || 'other'}</span>
+                    <span className="text-xs px-2 py-0.5 rounded-full text-white" style={{background: typeColor(c.contact_type)}}>{getCategory(c.contact_type)}</span>
                   </div>
                 </div>
                 <div className="flex gap-2">
@@ -1887,7 +1894,7 @@
                     </div>
                     <div><label className="text-xs font-medium block mb-1" style={{color:'#7A5A5A'}}>Type</label>
                       <select value={editingContact.contact_type || 'client'} onChange={(e) => setEditingContact({...editingContact, contact_type: e.target.value})} className="input-glass w-full">
-                        {['lead','client','past_client','sphere','vendor','referral_partner','agent','lender','other'].map(t => <option key={t} value={t}>{t.replace(/_/g,' ').replace(/\b\w/g, l => l.toUpperCase())}</option>)}
+                        {['client','vendor','contractor'].map(t => <option key={t} value={t}>{t.charAt(0).toUpperCase()+t.slice(1)}</option>)}
                       </select>
                     </div>
                     <div className="grid grid-cols-2 gap-3">
@@ -1925,7 +1932,7 @@
         <div className="flex-1 flex flex-col p-3 sm:p-6 overflow-hidden min-h-0">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
             <div>
-              <h2 className="text-lg font-semibold" style={{color:'#7F1330'}}>Clients</h2>
+              <h2 className="text-lg font-semibold" style={{color:'#7F1330'}}>Contacts</h2>
               <p className="text-secondary text-xs mt-0.5">{contacts.length} contacts</p>
             </div>
             <button onClick={() => setShowAddForm(true)} className="btn-primary text-xs">+ Add Contact</button>
@@ -1934,7 +1941,7 @@
           <div className="flex flex-col sm:flex-row gap-2 mb-4">
             <input type="text" placeholder="Search name, email, phone..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} className="input-glass flex-1" />
             <div className="flex gap-1 flex-wrap">
-              {[['all','All'],['lead','Leads'],['client','Clients'],['past_client','Past Clients'],['sphere','Sphere'],['vendor','Vendors']].map(([val,label]) => (
+              {[['all','All'],['client','Clients'],['vendor','Vendors'],['contractor','Contractors']].map(([val,label]) => (
                 <button key={val} onClick={() => setFilterType(val)} className="text-xs px-3 py-1.5 rounded-full transition-all" style={filterType === val ? {background:'#7F1330', color:'#fff'} : {background:'#FFEEE3', color:'#7A5A5A'}}>{label} ({typeCounts[val] || 0})</button>
               ))}
             </div>
@@ -1959,7 +1966,7 @@
                   </div>
                   <div><label className="text-xs font-medium block mb-1" style={{color:'#7A5A5A'}}>Type</label>
                     <select value={formData.contact_type} onChange={(e) => setFormData({...formData, contact_type: e.target.value})} className="input-glass w-full">
-                      {['lead','client','past_client','sphere','vendor','referral_partner','agent','lender','other'].map(t => <option key={t} value={t}>{t.replace(/_/g,' ').replace(/\b\w/g, l => l.toUpperCase())}</option>)}
+                      {['client','vendor','contractor'].map(t => <option key={t} value={t}>{t.charAt(0).toUpperCase()+t.slice(1)}</option>)}
                     </select>
                   </div>
                   <div className="flex gap-3 pt-4">
@@ -1984,7 +1991,7 @@
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2 mb-1">
                           <p className="font-semibold text-sm">{contact.first_name} {contact.last_name}</p>
-                          <span className="text-xs px-1.5 py-0.5 rounded-full text-white" style={{background: typeColor(contact.contact_type), fontSize:'10px'}}>{contact.contact_type || 'other'}</span>
+                          <span className="text-xs px-1.5 py-0.5 rounded-full text-white" style={{background: typeColor(contact.contact_type), fontSize:'10px'}}>{getCategory(contact.contact_type)}</span>
                         </div>
                         <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-0.5">
                           <div className="flex items-center gap-1.5">
@@ -2037,7 +2044,7 @@
                   </div>
                   <div><label className="text-xs font-medium block mb-1" style={{color:'#7A5A5A'}}>Type</label>
                     <select value={editingContact.contact_type || 'client'} onChange={(e) => setEditingContact({...editingContact, contact_type: e.target.value})} className="input-glass w-full">
-                      {['lead','client','vendor','agent','lender','other'].map(t => <option key={t} value={t}>{t.charAt(0).toUpperCase()+t.slice(1)}</option>)}
+                      {['client','vendor','contractor'].map(t => <option key={t} value={t}>{t.charAt(0).toUpperCase()+t.slice(1)}</option>)}
                     </select>
                   </div>
                   <div className="flex gap-3 pt-4">
@@ -3572,7 +3579,7 @@
         { id:'command', label:'Command Center', icon:IconDashboard },
         { id:'pipeline', label:'Pipeline', icon:IconPipeline },
         { id:'transactions', label:'Transactions', icon:IconTransaction },
-        { id:'clients', label:'Clients', icon:IconClients },
+        { id:'clients', label:'Contacts', icon:IconContacts },
         { id:'comms', label:'Comms Hub', icon:IconComms },
         { id:'tasks', label:'Tasks', icon:IconTask },
         { id:'showings', label:'Showings', icon:IconShowings },
