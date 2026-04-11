@@ -1887,6 +1887,9 @@
       const [drafts, setDrafts] = useState([]);
       const [inboxEmails, setInboxEmails] = useState([]);
       const [inboxLoading, setInboxLoading] = useState(false);
+      const [inboxLoadingMore, setInboxLoadingMore] = useState(false);
+      const [inboxNextPage, setInboxNextPage] = useState(null);
+      const inboxScrollRef = React.useRef(null);
       const [selectedEmail, setSelectedEmail] = useState(null);
       const [emailBody, setEmailBody] = useState('');
       const [loadingBody, setLoadingBody] = useState(false);
@@ -1920,19 +1923,30 @@
         if (draftsRes.data) setDrafts(draftsRes.data);
       };
 
-      const fetchInbox = async () => {
+      const fetchInbox = async (loadMore = false) => {
         if (!window.__amyCRM?.userId) return;
-        setInboxLoading(true);
+        if (loadMore) { setInboxLoadingMore(true); } else { setInboxLoading(true); }
         try {
           const res = await fetch(SUPABASE_URL + '/functions/v1/gmail', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'apikey': SUPABASE_ANON_KEY },
-            body: JSON.stringify({ action: 'list_emails', user_id: window.__amyCRM.userId, max_results: 20 })
+            body: JSON.stringify({ action: 'list_emails', user_id: window.__amyCRM.userId, max_results: 20, page_token: loadMore ? inboxNextPage : undefined })
           });
           const data = await res.json();
-          if (data.emails) setInboxEmails(data.emails);
+          if (data.emails) {
+            if (loadMore) { setInboxEmails(prev => [...prev, ...data.emails]); } else { setInboxEmails(data.emails); }
+            setInboxNextPage(data.nextPageToken || null);
+          }
         } catch (err) { console.error('Inbox fetch error:', err); }
-        setInboxLoading(false);
+        if (loadMore) { setInboxLoadingMore(false); } else { setInboxLoading(false); }
+      };
+
+      // Infinite scroll handler
+      const handleInboxScroll = (e) => {
+        const el = e.target;
+        if (el.scrollHeight - el.scrollTop - el.clientHeight < 100 && inboxNextPage && !inboxLoadingMore) {
+          fetchInbox(true);
+        }
       };
 
       const openEmail = async (email) => {
@@ -2107,9 +2121,10 @@
                     </div>
                   </div>
                 ) : (
-                  <div className="space-y-1">
-                    <div className="flex justify-end mb-2">
-                      <button onClick={fetchInbox} className="text-xs text-secondary hover:underline">Refresh</button>
+                  <div className="space-y-1" onScroll={handleInboxScroll} ref={inboxScrollRef} style={{maxHeight:'calc(100vh - 320px)', overflowY:'auto'}}>
+                    <div className="flex justify-between items-center mb-2">
+                      <span className="text-xs text-secondary">{inboxEmails.length} emails loaded</span>
+                      <button onClick={() => fetchInbox(false)} className="text-xs text-secondary hover:underline">Refresh</button>
                     </div>
                     {inboxEmails.map(email => {
                       const sender = parseFrom(email.from);
@@ -2129,6 +2144,8 @@
                         </div>
                       );
                     })}
+                    {inboxLoadingMore && <div className="text-center py-4"><p className="text-xs text-secondary">Loading more emails...</p></div>}
+                    {!inboxNextPage && inboxEmails.length > 0 && <div className="text-center py-4"><p className="text-xs text-secondary">You've reached the end</p></div>}
                     {inboxEmails.length === 0 && <p className="text-center text-secondary text-sm py-8">No emails found.</p>}
                   </div>
                 )}
