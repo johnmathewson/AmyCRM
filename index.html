@@ -9,6 +9,7 @@
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -3739,19 +3740,41 @@
         return { headers, rows };
       };
 
+      const parseExcel = (data) => {
+        try {
+          const wb = XLSX.read(data, { type: 'array', cellDates: true });
+          const sheet = wb.Sheets[wb.SheetNames[0]];
+          const json = XLSX.utils.sheet_to_json(sheet, { defval: '' });
+          if (!json.length) return null;
+          const headers = Object.keys(json[0]);
+          const rows = json.map(row => {
+            const clean = {};
+            headers.forEach(h => { clean[h] = row[h] !== null && row[h] !== undefined ? String(row[h]) : ''; });
+            return clean;
+          });
+          return { headers, rows };
+        } catch (err) { console.error('Excel parse error:', err); return null; }
+      };
+
       const handleFileSelect = (e) => {
         const file = e.target.files[0];
         if (!file) return;
         setImportFile(file);
+        const ext = file.name.split('.').pop().toLowerCase();
         const reader = new FileReader();
-        reader.onload = (ev) => {
-          const parsed = parseCSV(ev.target.result);
-          if (parsed) {
-            setImportPreview(parsed);
-            setImportMapping(autoMapFields(parsed.headers));
-          }
-        };
-        reader.readAsText(file);
+        if (ext === 'csv') {
+          reader.onload = (ev) => {
+            const parsed = parseCSV(ev.target.result);
+            if (parsed) { setImportPreview(parsed); setImportMapping(autoMapFields(parsed.headers)); }
+          };
+          reader.readAsText(file);
+        } else {
+          reader.onload = (ev) => {
+            const parsed = parseExcel(ev.target.result);
+            if (parsed) { setImportPreview(parsed); setImportMapping(autoMapFields(parsed.headers)); }
+          };
+          reader.readAsArrayBuffer(file);
+        }
       };
 
       const runImport = async () => {
@@ -4029,8 +4052,8 @@
           {showImport && (
             <div style={{position:'fixed', inset:0, background:'rgba(0,0,0,0.3)', zIndex:2000, display:'flex', alignItems:'center', justifyContent:'center'}} onClick={() => setShowImport(false)}>
               <div className="glass p-6" style={{width:'700px', maxHeight:'80vh', overflow:'auto'}} onClick={e => e.stopPropagation()}>
-                <h3 className="font-semibold mb-4">Import PropStream CSV</h3>
-                <input type="file" accept=".csv" onChange={handleFileSelect} className="mb-4 text-sm" />
+                <h3 className="font-semibold mb-4">Import PropStream Data</h3>
+                <input type="file" accept=".csv,.xls,.xlsx" onChange={handleFileSelect} className="mb-4 text-sm" />
                 {importPreview && (
                   <div>
                     <p className="text-sm mb-3 text-secondary">{importPreview.rows.length} records found &middot; {Object.keys(importMapping).length} fields auto-mapped</p>
