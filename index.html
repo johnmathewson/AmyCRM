@@ -4569,7 +4569,7 @@
         let inserted = 0;
         for (let i = 0; i < records.length; i += 100) {
           const chunk = records.slice(i, i + 100);
-          const { error } = await supabase.from('sold_comps').insert(chunk);
+          const { error, count } = await supabase.from('sold_comps').upsert(chunk, { onConflict: 'address,city,sale_date,sale_price', ignoreDuplicates: true });
           if (!error) inserted += chunk.length;
         }
         setImporting(false);
