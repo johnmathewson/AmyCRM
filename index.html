@@ -3613,6 +3613,15 @@
       const [briefComplete, setBriefComplete] = useState(false);
       const [briefResult, setBriefResult] = useState(null);
       const briefChatRef = React.useRef(null);
+      const [comps, setComps] = useState([]);
+      const [compsLoading, setCompsLoading] = useState(false);
+      const [compsStats, setCompsStats] = useState({ total: 0, cities: {} });
+      const [showCompImport, setShowCompImport] = useState(false);
+      const [compImportFile, setCompImportFile] = useState(null);
+      const [compImportPreview, setCompImportPreview] = useState(null);
+      const [compImportMapping, setCompImportMapping] = useState({});
+      const [compImporting, setCompImporting] = useState(false);
+      const [compCityFilter, setCompCityFilter] = useState('');
       const [selectedProspects, setSelectedProspects] = useState(new Set());
       const [detailProspect, setDetailProspect] = useState(null);
       const [stats, setStats] = useState({ imported: 0, valued: 0, queued: 0, sent: 0, replied: 0, converted: 0 });
@@ -4001,6 +4010,105 @@
         } catch (err) { alert('Error: ' + err.message); }
       };
 
+      // COMPS DATA
+      const COMP_FIELD_MAP = {
+        'address': ['Address', 'Property Address', 'Site Address', 'Street Address', 'Prop Address'],
+        'city': ['City', 'Property City', 'Site City'],
+        'state': ['State', 'Property State'],
+        'zip': ['Zip', 'Zip Code', 'Property Zip'],
+        'property_type': ['Property Type', 'Type', 'Prop Type'],
+        'beds': ['Beds', 'Bedrooms', 'BR', 'Bed'],
+        'baths': ['Baths', 'Bathrooms', 'BA', 'Bath', 'Total Bathrooms'],
+        'sqft': ['SqFt', 'Sq Ft', 'Square Feet', 'Living Area', 'Building Sqft', 'Building Sq Ft'],
+        'lot_size_sqft': ['Lot Size', 'Lot SqFt', 'Lot Size Sqft', 'Lot Sq Ft'],
+        'year_built': ['Year Built', 'Yr Built', 'Effective Year Built'],
+        'sale_price': ['Sale Price', 'Sold Price', 'Close Price', 'Last Sale Amount', 'Last Sale Price', 'Closed Price'],
+        'sale_date': ['Sale Date', 'Sold Date', 'Close Date', 'Last Sale Date', 'Last Sale Recording Date', 'Closed Date'],
+        'list_price': ['List Price', 'Original List Price', 'Listing Price'],
+        'days_on_market': ['DOM', 'Days on Market', 'Days On Market', 'CDOM'],
+        'latitude': ['Latitude', 'Lat'],
+        'longitude': ['Longitude', 'Lng', 'Long'],
+      };
+
+      const autoMapCompFields = (headers) => {
+        const mapping = {};
+        Object.entries(COMP_FIELD_MAP).forEach(([dbField, aliases]) => {
+          const match = headers.find(h => aliases.some(a => a.toLowerCase() === h.toLowerCase().trim()));
+          if (match) mapping[dbField] = match;
+        });
+        return mapping;
+      };
+
+      const fetchComps = async () => {
+        setCompsLoading(true);
+        let query = supabase.from('sold_comps').select('*');
+        if (compCityFilter) query = query.ilike('city', compCityFilter);
+        const { data } = await query.order('sale_date', { ascending: false }).limit(200);
+        setComps(data || []);
+        // Get stats
+        const { data: statsData } = await supabase.from('sold_comps').select('city');
+        if (statsData) {
+          const cities = {};
+          statsData.forEach(r => { const c = r.city || 'Unknown'; cities[c] = (cities[c] || 0) + 1; });
+          setCompsStats({ total: statsData.length, cities });
+        }
+        setCompsLoading(false);
+      };
+
+      useEffect(() => { if (view === 'comps') fetchComps(); }, [view, compCityFilter]);
+
+      const handleCompFileSelect = (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+        setCompImportFile(file);
+        const ext = file.name.split('.').pop().toLowerCase();
+        const reader = new FileReader();
+        if (ext === 'csv') {
+          reader.onload = (ev) => {
+            const parsed = parseCSV(ev.target.result);
+            if (parsed) { setCompImportPreview(parsed); setCompImportMapping(autoMapCompFields(parsed.headers)); }
+          };
+          reader.readAsText(file);
+        } else {
+          reader.onload = (ev) => {
+            const parsed = parseExcel(ev.target.result);
+            if (parsed) { setCompImportPreview(parsed); setCompImportMapping(autoMapCompFields(parsed.headers)); }
+          };
+          reader.readAsArrayBuffer(file);
+        }
+      };
+
+      const runCompImport = async () => {
+        if (!compImportPreview) return;
+        setCompImporting(true);
+        const batchName = compImportFile?.name || 'import-' + new Date().toISOString().split('T')[0];
+        const records = compImportPreview.rows.map(row => {
+          const rec = { raw_import: row, import_batch: batchName, source: 'mls_export' };
+          Object.entries(compImportMapping).forEach(([dbField, csvCol]) => {
+            let val = row[csvCol];
+            if (!val || val === '') return;
+            if (['beds', 'sqft', 'lot_size_sqft', 'year_built', 'days_on_market'].includes(dbField)) val = parseInt(val) || null;
+            else if (['baths', 'sale_price', 'list_price', 'latitude', 'longitude'].includes(dbField)) val = parseFloat(String(val).replace(/[$,%]/g, '')) || null;
+            else if (dbField === 'sale_date') { const d = new Date(val); val = isNaN(d) ? null : d.toISOString().split('T')[0]; }
+            if (val !== null && val !== undefined) rec[dbField] = val;
+          });
+          return rec;
+        }).filter(r => r.address && r.sale_price && r.sale_date);
+        let inserted = 0;
+        for (let i = 0; i < records.length; i += 100) {
+          const chunk = records.slice(i, i + 100);
+          const { error } = await supabase.from('sold_comps').insert(chunk);
+          if (!error) inserted += chunk.length;
+        }
+        setCompImporting(false);
+        setShowCompImport(false);
+        setCompImportFile(null);
+        setCompImportPreview(null);
+        setCompImportMapping({});
+        fetchComps();
+        alert('Imported ' + inserted + ' comps');
+      };
+
       const formatCurrency = (v) => v ? '$' + Number(v).toLocaleString() : '—';
       const formatDate = (d) => d ? new Date(d).toLocaleDateString() : '—';
 
@@ -4141,6 +4249,7 @@
                 { id: 'queue', label: 'Queue' },
                 { id: 'sent', label: 'Sent' },
                 { id: 'replied', label: 'Replied' },
+                { id: 'comps', label: 'Comps' },
               ].map(t => (
                 <button key={t.id} onClick={() => setView(t.id)} className="px-4 py-2 text-xs font-medium transition-all" style={{ borderBottom: view === t.id ? '2px solid #7F1330' : '2px solid transparent', color: view === t.id ? '#7F1330' : '#7A5A5A' }}>
                   {t.label}
@@ -4440,6 +4549,113 @@
                       </div>
                     ))}
                   </div>
+                )}
+              </div>
+            )}
+
+            {/* COMPS VIEW */}
+            {view === 'comps' && (
+              <div>
+                <div className="flex items-center justify-between mb-4">
+                  <div className="flex items-center gap-3">
+                    <h3 className="font-medium">Sold Comps Database</h3>
+                    <span className="text-xs text-secondary">{compsStats.total.toLocaleString()} total comps</span>
+                  </div>
+                  <button onClick={() => setShowCompImport(true)} className="btn-primary text-xs">Upload Comps</button>
+                </div>
+
+                {/* City stats */}
+                {Object.keys(compsStats.cities).length > 0 && (
+                  <div className="flex flex-wrap gap-2 mb-4">
+                    <button onClick={() => setCompCityFilter('')} className={`badge cursor-pointer ${!compCityFilter ? 'badge-hot' : ''}`} style={{fontSize:11, padding:'4px 10px'}}>All</button>
+                    {Object.entries(compsStats.cities).sort((a,b) => b[1]-a[1]).map(([city, count]) => (
+                      <button key={city} onClick={() => setCompCityFilter(city)} className={`badge cursor-pointer ${compCityFilter === city ? 'badge-hot' : ''}`} style={{fontSize:11, padding:'4px 10px'}}>{city} ({count})</button>
+                    ))}
+                  </div>
+                )}
+
+                {/* Comp import modal */}
+                {showCompImport && (
+                  <div style={{position:'fixed', inset:0, background:'rgba(0,0,0,0.3)', zIndex:2000, display:'flex', alignItems:'center', justifyContent:'center'}} onClick={() => setShowCompImport(false)}>
+                    <div className="glass p-6" style={{width:'700px', maxHeight:'80vh', overflow:'auto'}} onClick={e => e.stopPropagation()}>
+                      <h3 className="font-semibold mb-2">Upload Sold Comps</h3>
+                      <p className="text-xs text-secondary mb-4">Upload MLS sold data — CSV, XLS, or XLSX. Each file adds to the comp database.</p>
+                      <input type="file" accept=".csv,.xls,.xlsx" onChange={handleCompFileSelect} className="mb-4 text-sm" />
+                      {compImportPreview && (
+                        <div>
+                          <p className="text-sm mb-3 text-secondary">{compImportPreview.rows.length} records found &middot; {Object.keys(compImportMapping).length} fields auto-mapped</p>
+                          <div className="mb-4" style={{maxHeight:'300px', overflow:'auto'}}>
+                            <table className="w-full text-xs">
+                              <thead>
+                                <tr className="border-b border-[#F0D5CC]">
+                                  <th className="text-left py-2 px-2 font-medium">Our Field</th>
+                                  <th className="text-left py-2 px-2 font-medium">CSV Column</th>
+                                  <th className="text-left py-2 px-2 font-medium">Sample</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {Object.entries(COMP_FIELD_MAP).map(([dbField]) => (
+                                  <tr key={dbField} className="border-b border-[#F0D5CC]/50">
+                                    <td className="py-1.5 px-2 font-medium">{dbField.replace(/_/g, ' ')}</td>
+                                    <td className="py-1.5 px-2">
+                                      <select className="input-glass text-xs py-1 px-2" value={compImportMapping[dbField] || ''} onChange={e => setCompImportMapping({...compImportMapping, [dbField]: e.target.value})}>
+                                        <option value="">— skip —</option>
+                                        {compImportPreview.headers.map(h => <option key={h} value={h}>{h}</option>)}
+                                      </select>
+                                    </td>
+                                    <td className="py-1.5 px-2 text-secondary">{compImportMapping[dbField] ? (compImportPreview.rows[0]?.[compImportMapping[dbField]] || '').toString().substring(0, 40) : ''}</td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                          <div className="flex gap-2">
+                            <button onClick={runCompImport} disabled={compImporting} className="btn-primary">{compImporting ? 'Importing...' : 'Import ' + compImportPreview.rows.filter(r => compImportMapping.address && r[compImportMapping.address] && compImportMapping.sale_price && r[compImportMapping.sale_price]).length + ' Comps'}</button>
+                            <button onClick={() => { setShowCompImport(false); setCompImportPreview(null); }} className="btn-secondary">Cancel</button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {/* Comps table */}
+                {compsLoading ? <p className="text-secondary">Loading...</p> : comps.length === 0 ? (
+                  <div className="glass p-12 text-center">
+                    <p className="text-secondary mb-2">No comps loaded yet</p>
+                    <p className="text-secondary text-sm">Upload MLS sold data to build your comp database. The prospecting agent uses this to personalize outreach with real market data.</p>
+                  </div>
+                ) : (
+                  <table className="w-full text-xs">
+                    <thead>
+                      <tr className="border-b border-[#F0D5CC] text-left">
+                        <th className="py-2 px-2 font-medium">Address</th>
+                        <th className="py-2 px-2 font-medium">City</th>
+                        <th className="py-2 px-2 font-medium">Sale Price</th>
+                        <th className="py-2 px-2 font-medium">Sale Date</th>
+                        <th className="py-2 px-2 font-medium">Beds</th>
+                        <th className="py-2 px-2 font-medium">Baths</th>
+                        <th className="py-2 px-2 font-medium">SqFt</th>
+                        <th className="py-2 px-2 font-medium">$/SqFt</th>
+                        <th className="py-2 px-2 font-medium">DOM</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {comps.map(c => (
+                        <tr key={c.id} className="border-b border-[#F0D5CC]/30 hover:bg-[#FFF5F0] transition">
+                          <td className="py-2 px-2 font-medium">{c.address}</td>
+                          <td className="py-2 px-2">{c.city}</td>
+                          <td className="py-2 px-2">{formatCurrency(c.sale_price)}</td>
+                          <td className="py-2 px-2">{c.sale_date ? new Date(c.sale_date).toLocaleDateString() : '—'}</td>
+                          <td className="py-2 px-2">{c.beds || '—'}</td>
+                          <td className="py-2 px-2">{c.baths || '—'}</td>
+                          <td className="py-2 px-2">{c.sqft?.toLocaleString() || '—'}</td>
+                          <td className="py-2 px-2">{c.price_per_sqft ? '$' + Number(c.price_per_sqft).toFixed(0) : '—'}</td>
+                          <td className="py-2 px-2">{c.days_on_market ?? '—'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
                 )}
               </div>
             )}
