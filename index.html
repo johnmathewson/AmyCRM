@@ -4764,12 +4764,13 @@
         query = query.order(sortCol, { ascending: sortAsc }).range(page * PAGE_SIZE, (page + 1) * PAGE_SIZE - 1);
         const { data } = await query;
         setComps(data || []);
-        // Stats (only on initial load or city change)
-        const { data: statsData } = await supabase.from('sold_comps').select('city');
-        if (statsData) {
+        // Stats via server-side view (handles 30K+ records)
+        const { data: cityStats } = await supabase.from('sold_comps_city_stats').select('city, comp_count');
+        if (cityStats) {
           const cities = {};
-          statsData.forEach(r => { const c = r.city || 'Unknown'; cities[c] = (cities[c] || 0) + 1; });
-          setStats({ total: statsData.length, cities });
+          let total = 0;
+          cityStats.forEach(r => { cities[r.city] = r.comp_count; total += r.comp_count; });
+          setStats({ total, cities });
         }
         setLoading(false);
       };
