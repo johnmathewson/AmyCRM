@@ -3921,6 +3921,15 @@
         setBriefResult(null);
       };
 
+      const deleteCampaign = async (campaignId, e) => {
+        e.stopPropagation();
+        if (!confirm('Delete this campaign and all its prospects and outreach? This cannot be undone.')) return;
+        await supabase.from('prospect_outreach').delete().eq('campaign_id', campaignId);
+        await supabase.from('prospects').delete().eq('campaign_id', campaignId);
+        await supabase.from('prospect_campaigns').delete().eq('id', campaignId);
+        setCampaigns(campaigns.filter(c => c.id !== campaignId));
+      };
+
       // CSV IMPORT
       const PROPSTREAM_FIELD_MAP = {
         'property_address': ['Property Address', 'Address', 'Site Address', 'property_address', 'Prop Address', 'Property Street Address'],
@@ -4296,7 +4305,10 @@
                       <span>{c.total_replies || 0} replies</span>
                       <span style={{color:'#22c55e', fontWeight:500}}>{c.total_converted || 0} converted</span>
                     </div>
-                    <p className="text-xs text-secondary mt-2">{formatDate(c.created_at)}</p>
+                    <div className="flex items-center justify-between mt-2">
+                      <p className="text-xs text-secondary">{formatDate(c.created_at)}</p>
+                      <button onClick={(e) => deleteCampaign(c.id, e)} className="text-xs text-secondary hover:text-[#B72552] transition" title="Delete campaign">&#x2715;</button>
+                    </div>
                   </div>
                 ))}
               </div>
