@@ -3608,6 +3608,8 @@
       const [selectedProspects, setSelectedProspects] = useState(new Set());
       const [detailProspect, setDetailProspect] = useState(null);
       const [stats, setStats] = useState({ imported: 0, valued: 0, queued: 0, sent: 0, replied: 0, converted: 0 });
+      const [generating, setGenerating] = useState(false);
+      const [genProgress, setGenProgress] = useState('');
 
       useEffect(() => { fetchCampaigns(); }, []);
       useEffect(() => {
@@ -3868,6 +3870,47 @@
         alert('Converted! ' + (prospect.owner_name || 'Owner') + ' added to pipeline as seller lead.');
       };
 
+      const generateOutreach = async (ids) => {
+        const idArr = Array.isArray(ids) ? ids : [ids];
+        if (!idArr.length) return;
+        setGenerating(true);
+        setGenProgress(`Generating drafts for ${idArr.length} prospect${idArr.length > 1 ? 's' : ''}...`);
+        try {
+          const res = await fetch(SUPABASE_URL + '/functions/v1/prospect-outreach', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'apikey': SUPABASE_ANON_KEY },
+            body: JSON.stringify({ action: 'generate_batch', prospect_ids: idArr, campaign_id: selectedCampaign?.id })
+          });
+          const data = await res.json();
+          if (data.success) {
+            setGenProgress(`Done — ${data.generated} draft${data.generated !== 1 ? 's' : ''} created`);
+            setSelectedProspects(new Set());
+            fetchProspects();
+            fetchOutreach();
+            setTimeout(() => { setGenProgress(''); setGenerating(false); }, 3000);
+          } else {
+            setGenProgress('Error: ' + (data.error || 'Unknown'));
+            setTimeout(() => { setGenProgress(''); setGenerating(false); }, 5000);
+          }
+        } catch (err) {
+          setGenProgress('Error: ' + err.message);
+          setTimeout(() => { setGenProgress(''); setGenerating(false); }, 5000);
+        }
+      };
+
+      const regenerateOutreach = async (outreachId) => {
+        try {
+          const res = await fetch(SUPABASE_URL + '/functions/v1/prospect-outreach', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'apikey': SUPABASE_ANON_KEY },
+            body: JSON.stringify({ action: 'regenerate', outreach_id: outreachId })
+          });
+          const data = await res.json();
+          if (data.success) fetchOutreach();
+          else alert('Regenerate failed: ' + (data.error || 'Unknown'));
+        } catch (err) { alert('Error: ' + err.message); }
+      };
+
       const formatCurrency = (v) => v ? '$' + Number(v).toLocaleString() : '—';
       const formatDate = (d) => d ? new Date(d).toLocaleDateString() : '—';
 
@@ -4059,7 +4102,8 @@
                   {detailProspect.years_owned > 10 && <span className="badge" style={{background:'#EEF2FF', color:'#4f46e5'}}>Long-term Owner</span>}
                 </div>
 
-                <div className="flex gap-2 mt-4">
+                <div className="flex gap-2 mt-4 flex-wrap">
+                  {['imported', 'valued', 'queued'].includes(detailProspect.status) && detailProspect.owner_email && <button onClick={() => { generateOutreach([detailProspect.id]); setDetailProspect(null); }} disabled={generating} className="btn-primary text-xs">{generating ? 'Generating...' : 'Generate Outreach'}</button>}
                   {detailProspect.status === 'imported' && <button onClick={() => markProspectStatus(detailProspect.id, 'queued')} className="btn-primary text-xs">Queue for Outreach</button>}
                   {['replied', 'in_conversation'].includes(detailProspect.status) && <button onClick={() => convertToLead(detailProspect)} className="btn-primary text-xs">Convert to Lead</button>}
                   <button onClick={() => markProspectStatus(detailProspect.id, 'passed')} className="btn-secondary text-xs">Pass</button>
@@ -4073,9 +4117,16 @@
             {/* QUEUE VIEW */}
             {view === 'queue' && (
               <div>
+                {generating && genProgress && (
+                  <div className="glass p-3 mb-4 flex items-center gap-3" style={{borderColor:'#7F1330'}}>
+                    <div className="ai-sparkle">&#x2728;</div>
+                    <span className="text-sm font-medium" style={{color:'#7F1330'}}>{genProgress}</span>
+                  </div>
+                )}
                 {selectedProspects.size > 0 && (
                   <div className="glass p-3 mb-4 flex items-center gap-3">
                     <span className="text-sm font-medium">{selectedProspects.size} selected</span>
+                    <button onClick={() => generateOutreach([...selectedProspects])} disabled={generating} className="btn-primary text-xs" style={{background: generating ? '#ccc' : '#7F1330'}}>{generating ? 'Generating...' : 'Generate Outreach'}</button>
                     <button onClick={() => markProspectStatus([...selectedProspects], 'queued')} className="btn-primary text-xs">Queue Selected</button>
                     <button onClick={() => markProspectStatus([...selectedProspects], 'passed')} className="btn-secondary text-xs">Pass Selected</button>
                     <button onClick={() => setSelectedProspects(new Set())} className="btn-secondary text-xs">Clear</button>
@@ -4163,6 +4214,7 @@
                           {o.status === 'draft' && (
                             <>
                               <button onClick={() => approveOutreach(o.id)} className="btn-primary text-xs">Approve</button>
+                              <button onClick={() => regenerateOutreach(o.id)} className="btn-secondary text-xs">Regenerate</button>
                               <button onClick={() => rejectOutreach(o.id)} className="btn-secondary text-xs">Reject</button>
                             </>
                           )}
