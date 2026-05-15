@@ -3606,6 +3606,13 @@
       const [importMapping, setImportMapping] = useState({});
       const [importing, setImporting] = useState(false);
       const [newCampaign, setNewCampaign] = useState({ name: '', description: '', source: 'propstream' });
+      const [briefMessages, setBriefMessages] = useState([]);
+      const [briefInput, setBriefInput] = useState('');
+      const [briefLoading, setBriefLoading] = useState(false);
+      const [briefCampaignId, setBriefCampaignId] = useState(null);
+      const [briefComplete, setBriefComplete] = useState(false);
+      const [briefResult, setBriefResult] = useState(null);
+      const briefChatRef = React.useRef(null);
       const [selectedProspects, setSelectedProspects] = useState(new Set());
       const [detailProspect, setDetailProspect] = useState(null);
       const [stats, setStats] = useState({ imported: 0, valued: 0, queued: 0, sent: 0, replied: 0, converted: 0 });
@@ -3662,16 +3669,65 @@
         setOutreach(data || []);
       };
 
-      const createCampaign = async () => {
-        if (!newCampaign.name.trim()) return;
-        const { data, error } = await supabase.from('prospect_campaigns').insert([newCampaign]).select().single();
+      const startNewCampaign = async () => {
+        // Create a placeholder campaign, then start the guided brief
+        const { data, error } = await supabase.from('prospect_campaigns').insert([{ name: 'New Campaign (drafting...)', source: 'propstream' }]).select().single();
         if (!error && data) {
-          setCampaigns([data, ...campaigns]);
+          setBriefCampaignId(data.id);
+          setBriefMessages([]);
+          setBriefComplete(false);
+          setBriefResult(null);
+          setBriefInput('');
+          setShowNewCampaign(true);
+        }
+      };
+
+      const sendBriefMessage = async () => {
+        if (!briefInput.trim() || briefLoading) return;
+        const userMsg = briefInput.trim();
+        setBriefInput('');
+        const updated = [...briefMessages, { role: 'user', content: userMsg }];
+        setBriefMessages(updated);
+        setBriefLoading(true);
+        setTimeout(() => { if (briefChatRef.current) briefChatRef.current.scrollTop = briefChatRef.current.scrollHeight; }, 50);
+        try {
+          const res = await fetch(SUPABASE_URL + '/functions/v1/prospect-outreach', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'apikey': SUPABASE_ANON_KEY },
+            body: JSON.stringify({ action: 'brief_chat', messages: updated, campaign_id: briefCampaignId })
+          });
+          const data = await res.json();
+          if (data.ready && data.brief) {
+            const assistantMsg = { role: 'assistant', content: 'I have what I need. Here’s the campaign brief I’ve built:' };
+            setBriefMessages([...updated, assistantMsg]);
+            setBriefResult(data.brief);
+            setBriefComplete(true);
+            // Update campaign with the name from the brief
+            await supabase.from('prospect_campaigns').update({ name: data.brief.campaign_name || 'Campaign', campaign_brief: data.brief, brief_conversation: [...updated, assistantMsg] }).eq('id', briefCampaignId);
+            fetchCampaigns();
+          } else {
+            const assistantMsg = { role: 'assistant', content: data.message || data.error || 'Could you tell me more?' };
+            setBriefMessages([...updated, assistantMsg]);
+          }
+        } catch (err) {
+          setBriefMessages([...updated, { role: 'assistant', content: 'Something went wrong: ' + err.message }]);
+        }
+        setBriefLoading(false);
+        setTimeout(() => { if (briefChatRef.current) briefChatRef.current.scrollTop = briefChatRef.current.scrollHeight; }, 50);
+      };
+
+      const finishCampaignSetup = async () => {
+        const { data } = await supabase.from('prospect_campaigns').select('*').eq('id', briefCampaignId).single();
+        if (data) {
+          setCampaigns([data, ...campaigns.filter(c => c.id !== data.id)]);
           setSelectedCampaign(data);
-          setShowNewCampaign(false);
-          setNewCampaign({ name: '', description: '', source: 'propstream' });
           setView('cold');
         }
+        setShowNewCampaign(false);
+        setBriefMessages([]);
+        setBriefCampaignId(null);
+        setBriefComplete(false);
+        setBriefResult(null);
       };
 
       // CSV IMPORT
@@ -3957,26 +4013,70 @@
                 <h2 className="text-lg font-semibold" style={{color:'#7F1330'}}>Prospecting Agent</h2>
                 <p className="text-secondary text-sm mt-1">Import property lists, generate valuations, and manage outreach campaigns</p>
               </div>
-              <button onClick={() => setShowNewCampaign(true)} className="btn-primary">+ New Campaign</button>
+              <button onClick={startNewCampaign} className="btn-primary">+ New Campaign</button>
             </div>
 
             {showNewCampaign && (
-              <div className="glass p-5 mb-6">
-                <h3 className="font-medium mb-3">Create Campaign</h3>
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-3">
-                  <input className="input-glass" placeholder="Campaign name (e.g. May 2026 — High Equity Absentee)" value={newCampaign.name} onChange={e => setNewCampaign({...newCampaign, name: e.target.value})} />
-                  <input className="input-glass" placeholder="Description (optional)" value={newCampaign.description} onChange={e => setNewCampaign({...newCampaign, description: e.target.value})} />
-                  <select className="input-glass" value={newCampaign.source} onChange={e => setNewCampaign({...newCampaign, source: e.target.value})}>
-                    <option value="propstream">PropStream</option>
-                    <option value="mls_export">MLS Export</option>
-                    <option value="manual">Manual</option>
-                    <option value="other">Other</option>
-                  </select>
+              <div className="glass mb-6" style={{overflow:'hidden'}}>
+                <div className="p-4 border-b border-[#F0D5CC] flex items-center justify-between">
+                  <div>
+                    <h3 className="font-medium">Campaign Builder</h3>
+                    <p className="text-xs text-secondary mt-0.5">Tell me about this campaign and I'll build the outreach strategy</p>
+                  </div>
+                  <button onClick={() => { setShowNewCampaign(false); if (briefCampaignId && !briefComplete) supabase.from('prospect_campaigns').delete().eq('id', briefCampaignId); }} className="text-secondary hover:text-[#7F1330]"><IconClose /></button>
                 </div>
-                <div className="flex gap-2">
-                  <button onClick={createCampaign} className="btn-primary">Create</button>
-                  <button onClick={() => setShowNewCampaign(false)} className="btn-secondary">Cancel</button>
+                <div ref={briefChatRef} className="p-4 space-y-3" style={{maxHeight:'400px', overflowY:'auto', background:'#FFEEE3'}}>
+                  {briefMessages.length === 0 && !briefLoading && (
+                    <div className="text-center py-6">
+                      <p className="text-secondary text-sm mb-1">Who is this campaign targeting?</p>
+                      <p className="text-xs text-secondary">Example: "Failed listings in Lake County from the last 18 months" or "Absentee owners with high equity in Crown Point"</p>
+                    </div>
+                  )}
+                  {briefMessages.map((m, i) => (
+                    <div key={i} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                      <div className={`rounded-xl px-4 py-2.5 max-w-[85%] text-sm`} style={{
+                        background: m.role === 'user' ? '#7F1330' : '#FFFFFF',
+                        color: m.role === 'user' ? 'white' : '#2D2D2D',
+                        border: m.role === 'assistant' ? '1px solid #F0D5CC' : 'none',
+                      }}>
+                        {m.content}
+                      </div>
+                    </div>
+                  ))}
+                  {briefLoading && (
+                    <div className="flex justify-start">
+                      <div className="rounded-xl px-4 py-2.5 bg-white border border-[#F0D5CC] text-sm text-secondary">Thinking...</div>
+                    </div>
+                  )}
                 </div>
+                {briefComplete && briefResult ? (
+                  <div className="p-4 border-t border-[#F0D5CC]">
+                    <div className="glass p-4 mb-3" style={{background:'#FFF5F0'}}>
+                      <h4 className="font-medium text-sm mb-2" style={{color:'#7F1330'}}>{briefResult.campaign_name}</h4>
+                      <div className="grid grid-cols-2 gap-3 text-xs">
+                        <div><span className="font-medium">Target:</span> {briefResult.target_profile}</div>
+                        <div><span className="font-medium">Tone:</span> {briefResult.tone}</div>
+                        <div><span className="font-medium">Value Prop:</span> {briefResult.value_proposition}</div>
+                        <div><span className="font-medium">Pain Points:</span> {(briefResult.pain_points || []).join(', ')}</div>
+                      </div>
+                      {briefResult.talking_points?.length > 0 && (
+                        <div className="mt-2 text-xs"><span className="font-medium">Talking Points:</span> {briefResult.talking_points.join(' | ')}</div>
+                      )}
+                      {briefResult.avoid?.length > 0 && (
+                        <div className="mt-1 text-xs text-secondary"><span className="font-medium">Avoid:</span> {briefResult.avoid.join(', ')}</div>
+                      )}
+                    </div>
+                    <div className="flex gap-2">
+                      <button onClick={finishCampaignSetup} className="btn-primary">Start Campaign &rarr;</button>
+                      <button onClick={() => { setBriefComplete(false); setBriefResult(null); setBriefMessages([...briefMessages, {role:'user', content:'Let me adjust — '} ]); }} className="btn-secondary">Refine Brief</button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="p-3 border-t border-[#F0D5CC] flex gap-2">
+                    <input className="input-glass flex-1" placeholder="Describe your campaign target..." value={briefInput} onChange={e => setBriefInput(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendBriefMessage(); } }} disabled={briefLoading} />
+                    <button onClick={sendBriefMessage} disabled={briefLoading || !briefInput.trim()} className="btn-primary">{briefLoading ? '...' : 'Send'}</button>
+                  </div>
+                )}
               </div>
             )}
 
@@ -3994,7 +4094,10 @@
                         <h3 className="font-medium">{c.name}</h3>
                         {c.description && <p className="text-secondary text-xs mt-1">{c.description}</p>}
                       </div>
-                      <span className="badge" style={{background: c.status === 'active' ? '#E8F9EE' : '#F5F5F5', color: c.status === 'active' ? '#22c55e' : '#999'}}>{c.status}</span>
+                      <div className="flex items-center gap-2">
+                        {c.campaign_brief && Object.keys(c.campaign_brief).length > 0 && <span className="badge" style={{background:'#EEF2FF', color:'#4f46e5', fontSize:9}}>Brief</span>}
+                        <span className="badge" style={{background: c.status === 'active' ? '#E8F9EE' : '#F5F5F5', color: c.status === 'active' ? '#22c55e' : '#999'}}>{c.status}</span>
+                      </div>
                     </div>
                     <div className="flex gap-4 text-xs text-secondary">
                       <span>{c.total_imported || 0} imported</span>
