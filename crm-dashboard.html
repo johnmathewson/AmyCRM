@@ -4462,7 +4462,24 @@
       const [importPreview, setImportPreview] = useState(null);
       const [importMapping, setImportMapping] = useState({});
       const [importing, setImporting] = useState(false);
+      // Filters
       const [cityFilter, setCityFilter] = useState('');
+      const [searchText, setSearchText] = useState('');
+      const [priceMin, setPriceMin] = useState('');
+      const [priceMax, setPriceMax] = useState('');
+      const [dateFrom, setDateFrom] = useState('');
+      const [dateTo, setDateTo] = useState('');
+      const [bedsFilter, setBedsFilter] = useState('');
+      const [propTypeFilter, setPropTypeFilter] = useState('');
+      const [zipFilter, setZipFilter] = useState('');
+      // Sort
+      const [sortCol, setSortCol] = useState('sale_date');
+      const [sortAsc, setSortAsc] = useState(false);
+      // Pagination
+      const [page, setPage] = useState(0);
+      const PAGE_SIZE = 100;
+      const [totalFiltered, setTotalFiltered] = useState(0);
+      const [showFilters, setShowFilters] = useState(false);
 
       const COMP_FIELD_MAP = {
         'address': ['Address', 'Property Address', 'Site Address', 'Street Address', 'Prop Address'],
@@ -4518,12 +4535,32 @@
         } catch (err) { return null; }
       };
 
+      const buildQuery = (countOnly) => {
+        let query = countOnly
+          ? supabase.from('sold_comps').select('id', { count: 'exact', head: true })
+          : supabase.from('sold_comps').select('*');
+        if (cityFilter) query = query.ilike('city', cityFilter);
+        if (zipFilter) query = query.eq('zip', zipFilter);
+        if (searchText) query = query.ilike('address', '%' + searchText + '%');
+        if (priceMin) query = query.gte('sale_price', parseFloat(priceMin));
+        if (priceMax) query = query.lte('sale_price', parseFloat(priceMax));
+        if (dateFrom) query = query.gte('sale_date', dateFrom);
+        if (dateTo) query = query.lte('sale_date', dateTo);
+        if (bedsFilter) query = query.eq('beds', parseInt(bedsFilter));
+        if (propTypeFilter) query = query.ilike('property_type', propTypeFilter);
+        return query;
+      };
+
       const fetchComps = async () => {
         setLoading(true);
-        let query = supabase.from('sold_comps').select('*');
-        if (cityFilter) query = query.ilike('city', cityFilter);
-        const { data } = await query.order('sale_date', { ascending: false }).limit(200);
+        const countQ = buildQuery(true);
+        const { count } = await countQ;
+        setTotalFiltered(count || 0);
+        let query = buildQuery(false);
+        query = query.order(sortCol, { ascending: sortAsc }).range(page * PAGE_SIZE, (page + 1) * PAGE_SIZE - 1);
+        const { data } = await query;
         setComps(data || []);
+        // Stats (only on initial load or city change)
         const { data: statsData } = await supabase.from('sold_comps').select('city');
         if (statsData) {
           const cities = {};
@@ -4533,7 +4570,21 @@
         setLoading(false);
       };
 
-      useEffect(() => { fetchComps(); }, [cityFilter]);
+      useEffect(() => { setPage(0); }, [cityFilter, searchText, priceMin, priceMax, dateFrom, dateTo, bedsFilter, propTypeFilter, sortCol, sortAsc]);
+      useEffect(() => { fetchComps(); }, [cityFilter, searchText, priceMin, priceMax, dateFrom, dateTo, bedsFilter, propTypeFilter, sortCol, sortAsc, page]);
+
+      const handleSort = (col) => {
+        if (sortCol === col) setSortAsc(!sortAsc);
+        else { setSortCol(col); setSortAsc(col === 'address' || col === 'city'); }
+      };
+
+      const SortIcon = ({ col }) => {
+        if (sortCol !== col) return <span className="text-secondary ml-1" style={{fontSize:9}}>&#x25B4;&#x25BE;</span>;
+        return <span className="ml-1" style={{fontSize:9, color:'#7F1330'}}>{sortAsc ? '&#x25B4;' : '&#x25BE;'}</span>;
+      };
+
+      const clearFilters = () => { setCityFilter(''); setSearchText(''); setPriceMin(''); setPriceMax(''); setDateFrom(''); setDateTo(''); setBedsFilter(''); setPropTypeFilter(''); setZipFilter(''); };
+      const hasFilters = cityFilter || searchText || priceMin || priceMax || dateFrom || dateTo || bedsFilter || propTypeFilter || zipFilter;
 
       const handleFileSelect = (e) => {
         const file = e.target.files[0];
@@ -4557,8 +4608,7 @@
         const records = importPreview.rows.map(row => {
           const rec = { raw_import: row, import_batch: batchName, source: 'mls_export' };
           Object.entries(importMapping).forEach(([dbField, csvCol]) => {
-            let val = row[csvCol];
-            if (!val || val === '') return;
+            let val = row[csvCol]; if (!val || val === '') return;
             if (['beds', 'sqft', 'lot_size_sqft', 'year_built', 'days_on_market'].includes(dbField)) val = parseInt(val) || null;
             else if (['baths', 'sale_price', 'list_price', 'latitude', 'longitude'].includes(dbField)) val = parseFloat(String(val).replace(/[$,%]/g, '')) || null;
             else if (dbField === 'sale_date') { const d = new Date(val); val = isNaN(d) ? null : d.toISOString().split('T')[0]; }
@@ -4569,61 +4619,95 @@
         let inserted = 0;
         for (let i = 0; i < records.length; i += 100) {
           const chunk = records.slice(i, i + 100);
-          const { error, count } = await supabase.from('sold_comps').upsert(chunk, { onConflict: 'address,city,sale_date,sale_price', ignoreDuplicates: true });
+          const { error } = await supabase.from('sold_comps').upsert(chunk, { onConflict: 'address,city,sale_date,sale_price', ignoreDuplicates: true });
           if (!error) inserted += chunk.length;
         }
-        setImporting(false);
-        setShowImport(false);
-        setImportFile(null);
-        setImportPreview(null);
-        setImportMapping({});
+        setImporting(false); setShowImport(false); setImportFile(null); setImportPreview(null); setImportMapping({});
         fetchComps();
         alert('Imported ' + inserted + ' comps');
       };
 
-      const formatCurrency = (v) => v ? '$' + Number(v).toLocaleString() : '—';
+      const fmt = (v) => v ? '$' + Number(v).toLocaleString() : '—';
+      const totalPages = Math.ceil(totalFiltered / PAGE_SIZE);
 
       return (
         <div className="flex-1 overflow-y-auto p-6">
-          <div className="flex items-center justify-between mb-6">
+          <div className="flex items-center justify-between mb-4">
             <div>
               <h2 className="text-lg font-semibold" style={{color:'#7F1330'}}>Sold Comps</h2>
-              <p className="text-secondary text-sm mt-1">{stats.total.toLocaleString()} comps loaded &middot; Used by the prospecting agent for personalized outreach</p>
+              <p className="text-secondary text-sm mt-1">{stats.total.toLocaleString()} total &middot; {totalFiltered.toLocaleString()} shown</p>
             </div>
-            <button onClick={() => setShowImport(true)} className="btn-primary">Upload Comps</button>
+            <div className="flex gap-2">
+              <button onClick={() => setShowFilters(!showFilters)} className="btn-secondary text-xs">{showFilters ? 'Hide Filters' : 'Filters'}{hasFilters ? ' *' : ''}</button>
+              <button onClick={() => setShowImport(true)} className="btn-primary text-xs">Upload Comps</button>
+            </div>
           </div>
 
-          {Object.keys(stats.cities).length > 0 && (
-            <div className="flex flex-wrap gap-2 mb-4">
-              <button onClick={() => setCityFilter('')} className={`badge cursor-pointer ${!cityFilter ? 'badge-hot' : ''}`} style={{fontSize:11, padding:'4px 10px'}}>All ({stats.total})</button>
+          {/* Search bar */}
+          <div className="flex gap-2 mb-3">
+            <input className="input-glass flex-1" placeholder="Search address..." value={searchText} onChange={e => setSearchText(e.target.value)} />
+            <select className="input-glass" style={{width:160}} value={cityFilter} onChange={e => setCityFilter(e.target.value)}>
+              <option value="">All Cities</option>
               {Object.entries(stats.cities).sort((a,b) => b[1]-a[1]).map(([city, count]) => (
-                <button key={city} onClick={() => setCityFilter(city)} className={`badge cursor-pointer ${cityFilter === city ? 'badge-hot' : ''}`} style={{fontSize:11, padding:'4px 10px'}}>{city} ({count})</button>
+                <option key={city} value={city}>{city} ({count})</option>
               ))}
+            </select>
+          </div>
+
+          {/* Advanced filters */}
+          {showFilters && (
+            <div className="glass p-4 mb-3">
+              <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3 text-xs">
+                <div>
+                  <label className="text-secondary mb-1 block">Price Min</label>
+                  <input className="input-glass w-full" type="number" placeholder="$0" value={priceMin} onChange={e => setPriceMin(e.target.value)} />
+                </div>
+                <div>
+                  <label className="text-secondary mb-1 block">Price Max</label>
+                  <input className="input-glass w-full" type="number" placeholder="No max" value={priceMax} onChange={e => setPriceMax(e.target.value)} />
+                </div>
+                <div>
+                  <label className="text-secondary mb-1 block">Sale Date From</label>
+                  <input className="input-glass w-full" type="date" value={dateFrom} onChange={e => setDateFrom(e.target.value)} />
+                </div>
+                <div>
+                  <label className="text-secondary mb-1 block">Sale Date To</label>
+                  <input className="input-glass w-full" type="date" value={dateTo} onChange={e => setDateTo(e.target.value)} />
+                </div>
+                <div>
+                  <label className="text-secondary mb-1 block">Beds</label>
+                  <select className="input-glass w-full" value={bedsFilter} onChange={e => setBedsFilter(e.target.value)}>
+                    <option value="">Any</option>
+                    {[1,2,3,4,5,6].map(b => <option key={b} value={b}>{b}+</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="text-secondary mb-1 block">Zip</label>
+                  <input className="input-glass w-full" placeholder="46307" value={zipFilter} onChange={e => setZipFilter(e.target.value)} />
+                </div>
+              </div>
+              {hasFilters && <button onClick={clearFilters} className="btn-secondary text-xs mt-3">Clear All Filters</button>}
             </div>
           )}
 
+          {/* Import modal */}
           {showImport && (
             <div style={{position:'fixed', inset:0, background:'rgba(0,0,0,0.3)', zIndex:2000, display:'flex', alignItems:'center', justifyContent:'center'}} onClick={() => setShowImport(false)}>
               <div className="glass p-6" style={{width:'700px', maxHeight:'80vh', overflow:'auto'}} onClick={e => e.stopPropagation()}>
                 <h3 className="font-semibold mb-2">Upload Sold Comps</h3>
-                <p className="text-xs text-secondary mb-4">Upload MLS sold data — CSV, XLS, or XLSX. Each file adds to the comp database.</p>
+                <p className="text-xs text-secondary mb-4">Upload MLS sold data — CSV, XLS, or XLSX. Duplicates are automatically skipped.</p>
                 <input type="file" accept=".csv,.xls,.xlsx" onChange={handleFileSelect} className="mb-4 text-sm" />
                 {importPreview && (
                   <div>
-                    <p className="text-sm mb-3 text-secondary">{importPreview.rows.length} records found &middot; {Object.keys(importMapping).length} fields auto-mapped</p>
+                    <p className="text-sm mb-3 text-secondary">{importPreview.rows.length} records &middot; {Object.keys(importMapping).length} auto-mapped</p>
                     <div className="mb-4" style={{maxHeight:'300px', overflow:'auto'}}>
                       <table className="w-full text-xs">
-                        <thead><tr className="border-b border-[#F0D5CC]"><th className="text-left py-2 px-2 font-medium">Our Field</th><th className="text-left py-2 px-2 font-medium">File Column</th><th className="text-left py-2 px-2 font-medium">Sample</th></tr></thead>
+                        <thead><tr className="border-b border-[#F0D5CC]"><th className="text-left py-2 px-2 font-medium">Field</th><th className="text-left py-2 px-2 font-medium">Column</th><th className="text-left py-2 px-2 font-medium">Sample</th></tr></thead>
                         <tbody>
                           {Object.entries(COMP_FIELD_MAP).map(([dbField]) => (
                             <tr key={dbField} className="border-b border-[#F0D5CC]/50">
                               <td className="py-1.5 px-2 font-medium">{dbField.replace(/_/g, ' ')}</td>
-                              <td className="py-1.5 px-2">
-                                <select className="input-glass text-xs py-1 px-2" value={importMapping[dbField] || ''} onChange={e => setImportMapping({...importMapping, [dbField]: e.target.value})}>
-                                  <option value="">— skip —</option>
-                                  {importPreview.headers.map(h => <option key={h} value={h}>{h}</option>)}
-                                </select>
-                              </td>
+                              <td className="py-1.5 px-2"><select className="input-glass text-xs py-1 px-2" value={importMapping[dbField] || ''} onChange={e => setImportMapping({...importMapping, [dbField]: e.target.value})}><option value="">— skip —</option>{importPreview.headers.map(h => <option key={h} value={h}>{h}</option>)}</select></td>
                               <td className="py-1.5 px-2 text-secondary">{importMapping[dbField] ? (importPreview.rows[0]?.[importMapping[dbField]] || '').toString().substring(0, 40) : ''}</td>
                             </tr>
                           ))}
@@ -4631,7 +4715,7 @@
                       </table>
                     </div>
                     <div className="flex gap-2">
-                      <button onClick={runImport} disabled={importing} className="btn-primary">{importing ? 'Importing...' : 'Import ' + importPreview.rows.filter(r => importMapping.address && r[importMapping.address] && importMapping.sale_price && r[importMapping.sale_price]).length + ' Comps'}</button>
+                      <button onClick={runImport} disabled={importing} className="btn-primary">{importing ? 'Importing...' : 'Import Comps'}</button>
                       <button onClick={() => { setShowImport(false); setImportPreview(null); }} className="btn-secondary">Cancel</button>
                     </div>
                   </div>
@@ -4640,42 +4724,68 @@
             </div>
           )}
 
+          {/* Comps table */}
           {loading ? <p className="text-secondary">Loading...</p> : comps.length === 0 ? (
             <div className="glass p-12 text-center">
-              <p className="text-secondary mb-2">No comps loaded yet</p>
-              <p className="text-secondary text-sm">Upload MLS sold data to build your comp database. The prospecting agent uses this data to personalize outreach with real market numbers.</p>
+              <p className="text-secondary mb-2">{hasFilters ? 'No comps match your filters' : 'No comps loaded yet'}</p>
+              <p className="text-secondary text-sm">{hasFilters ? 'Try adjusting your filters.' : 'Upload MLS sold data to build your comp database.'}</p>
             </div>
           ) : (
-            <table className="w-full text-xs">
-              <thead>
-                <tr className="border-b border-[#F0D5CC] text-left">
-                  <th className="py-2 px-2 font-medium">Address</th>
-                  <th className="py-2 px-2 font-medium">City</th>
-                  <th className="py-2 px-2 font-medium">Sale Price</th>
-                  <th className="py-2 px-2 font-medium">Sale Date</th>
-                  <th className="py-2 px-2 font-medium">Beds</th>
-                  <th className="py-2 px-2 font-medium">Baths</th>
-                  <th className="py-2 px-2 font-medium">SqFt</th>
-                  <th className="py-2 px-2 font-medium">$/SqFt</th>
-                  <th className="py-2 px-2 font-medium">DOM</th>
-                </tr>
-              </thead>
-              <tbody>
-                {comps.map(c => (
-                  <tr key={c.id} className="border-b border-[#F0D5CC]/30 hover:bg-[#FFF5F0] transition">
-                    <td className="py-2 px-2 font-medium">{c.address}</td>
-                    <td className="py-2 px-2">{c.city}</td>
-                    <td className="py-2 px-2">{formatCurrency(c.sale_price)}</td>
-                    <td className="py-2 px-2">{c.sale_date ? new Date(c.sale_date).toLocaleDateString() : '—'}</td>
-                    <td className="py-2 px-2">{c.beds || '—'}</td>
-                    <td className="py-2 px-2">{c.baths || '—'}</td>
-                    <td className="py-2 px-2">{c.sqft?.toLocaleString() || '—'}</td>
-                    <td className="py-2 px-2">{c.price_per_sqft ? '$' + Number(c.price_per_sqft).toFixed(0) : '—'}</td>
-                    <td className="py-2 px-2">{c.days_on_market ?? '—'}</td>
+            <div>
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="border-b border-[#F0D5CC] text-left">
+                    {[
+                      { col: 'address', label: 'Address' },
+                      { col: 'city', label: 'City' },
+                      { col: 'zip', label: 'Zip' },
+                      { col: 'sale_price', label: 'Sale Price' },
+                      { col: 'sale_date', label: 'Sale Date' },
+                      { col: 'list_price', label: 'List Price' },
+                      { col: 'beds', label: 'Beds' },
+                      { col: 'baths', label: 'Baths' },
+                      { col: 'sqft', label: 'SqFt' },
+                      { col: 'price_per_sqft', label: '$/SqFt' },
+                      { col: 'days_on_market', label: 'DOM' },
+                      { col: 'year_built', label: 'Built' },
+                    ].map(h => (
+                      <th key={h.col} className="py-2 px-2 font-medium cursor-pointer select-none hover:text-[#7F1330] transition" onClick={() => handleSort(h.col)}>
+                        {h.label}<SortIcon col={h.col} />
+                      </th>
+                    ))}
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {comps.map(c => (
+                    <tr key={c.id} className="border-b border-[#F0D5CC]/30 hover:bg-[#FFF5F0] transition">
+                      <td className="py-2 px-2 font-medium">{c.address}</td>
+                      <td className="py-2 px-2">{c.city}</td>
+                      <td className="py-2 px-2">{c.zip || '—'}</td>
+                      <td className="py-2 px-2">{fmt(c.sale_price)}</td>
+                      <td className="py-2 px-2">{c.sale_date ? new Date(c.sale_date).toLocaleDateString() : '—'}</td>
+                      <td className="py-2 px-2">{fmt(c.list_price)}</td>
+                      <td className="py-2 px-2">{c.beds || '—'}</td>
+                      <td className="py-2 px-2">{c.baths || '—'}</td>
+                      <td className="py-2 px-2">{c.sqft?.toLocaleString() || '—'}</td>
+                      <td className="py-2 px-2">{c.price_per_sqft ? '$' + Number(c.price_per_sqft).toFixed(0) : '—'}</td>
+                      <td className="py-2 px-2">{c.days_on_market ?? '—'}</td>
+                      <td className="py-2 px-2">{c.year_built || '—'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+
+              {/* Pagination */}
+              {totalPages > 1 && (
+                <div className="flex items-center justify-between mt-4">
+                  <span className="text-xs text-secondary">Page {page + 1} of {totalPages} &middot; {totalFiltered.toLocaleString()} results</span>
+                  <div className="flex gap-2">
+                    <button onClick={() => setPage(Math.max(0, page - 1))} disabled={page === 0} className="btn-secondary text-xs">&larr; Prev</button>
+                    <button onClick={() => setPage(Math.min(totalPages - 1, page + 1))} disabled={page >= totalPages - 1} className="btn-secondary text-xs">Next &rarr;</button>
+                  </div>
+                </div>
+              )}
+            </div>
           )}
         </div>
       );
