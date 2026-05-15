@@ -283,6 +283,7 @@
     const IconNotes = () => (<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>);
     const IconCalendar = () => (<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect><line x1="16" y1="2" x2="16" y2="6"></line><line x1="8" y1="2" x2="8" y2="6"></line><line x1="3" y1="10" x2="21" y2="10"></line></svg>);
     const IconClose = () => (<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>);
+    const IconProspecting = () => (<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line><line x1="8" y1="11" x2="14" y2="11"></line><line x1="11" y1="8" x2="11" y2="14"></line></svg>);
 
     // AI DRAFT PANEL
     function AIDraftPanel({ isOpen, onClose, draft, onApprove }) {
@@ -3587,6 +3588,646 @@
       );
     }
 
+    // ============================================================
+    // PROSPECTING AGENT MODULE
+    // ============================================================
+    function Prospecting() {
+      const [campaigns, setCampaigns] = useState([]);
+      const [selectedCampaign, setSelectedCampaign] = useState(null);
+      const [prospects, setProspects] = useState([]);
+      const [outreach, setOutreach] = useState([]);
+      const [view, setView] = useState('campaigns'); // campaigns | queue | outbox | active
+      const [loading, setLoading] = useState(true);
+      const [showImport, setShowImport] = useState(false);
+      const [showNewCampaign, setShowNewCampaign] = useState(false);
+      const [importFile, setImportFile] = useState(null);
+      const [importPreview, setImportPreview] = useState(null);
+      const [importMapping, setImportMapping] = useState({});
+      const [importing, setImporting] = useState(false);
+      const [newCampaign, setNewCampaign] = useState({ name: '', description: '', source: 'propstream' });
+      const [selectedProspects, setSelectedProspects] = useState(new Set());
+      const [detailProspect, setDetailProspect] = useState(null);
+      const [stats, setStats] = useState({ imported: 0, valued: 0, queued: 0, sent: 0, replied: 0, converted: 0 });
+
+      useEffect(() => { fetchCampaigns(); }, []);
+      useEffect(() => {
+        if (selectedCampaign) {
+          fetchProspects();
+          fetchOutreach();
+        }
+      }, [selectedCampaign, view]);
+
+      const fetchCampaigns = async () => {
+        setLoading(true);
+        const { data } = await supabase.from('prospect_campaigns').select('*').order('created_at', { ascending: false });
+        setCampaigns(data || []);
+        setLoading(false);
+      };
+
+      const fetchProspects = async () => {
+        if (!selectedCampaign) return;
+        let query = supabase.from('prospects').select('*').eq('campaign_id', selectedCampaign.id);
+        if (view === 'queue') query = query.in('status', ['imported', 'valued', 'queued']);
+        else if (view === 'active') query = query.in('status', ['outreach_sent', 'replied', 'in_conversation']);
+        const { data } = await query.order('created_at', { ascending: false });
+        setProspects(data || []);
+        // Update stats
+        const { data: allP } = await supabase.from('prospects').select('status').eq('campaign_id', selectedCampaign.id);
+        if (allP) {
+          const s = { imported: 0, valued: 0, queued: 0, sent: 0, replied: 0, converted: 0 };
+          allP.forEach(p => {
+            if (p.status === 'imported') s.imported++;
+            else if (p.status === 'valued') s.valued++;
+            else if (p.status === 'queued') s.queued++;
+            else if (p.status === 'outreach_sent') s.sent++;
+            else if (p.status === 'replied' || p.status === 'in_conversation') s.replied++;
+            else if (p.status === 'converted') s.converted++;
+          });
+          setStats(s);
+        }
+      };
+
+      const fetchOutreach = async () => {
+        if (!selectedCampaign) return;
+        let query = supabase.from('prospect_outreach').select('*, prospects(property_address, property_city, property_zip, owner_name, owner_email, our_valuation)').eq('campaign_id', selectedCampaign.id);
+        if (view === 'outbox') query = query.in('status', ['draft', 'approved']);
+        else if (view === 'active') query = query.in('status', ['sent', 'opened', 'replied']);
+        const { data } = await query.order('created_at', { ascending: false });
+        setOutreach(data || []);
+      };
+
+      const createCampaign = async () => {
+        if (!newCampaign.name.trim()) return;
+        const { data, error } = await supabase.from('prospect_campaigns').insert([newCampaign]).select().single();
+        if (!error && data) {
+          setCampaigns([data, ...campaigns]);
+          setSelectedCampaign(data);
+          setShowNewCampaign(false);
+          setNewCampaign({ name: '', description: '', source: 'propstream' });
+          setView('queue');
+        }
+      };
+
+      // CSV IMPORT
+      const PROPSTREAM_FIELD_MAP = {
+        'property_address': ['Property Address', 'Address', 'Site Address', 'property_address', 'Prop Address', 'Property Street Address'],
+        'property_city': ['Property City', 'City', 'Site City', 'property_city'],
+        'property_state': ['Property State', 'State', 'Site State', 'property_state'],
+        'property_zip': ['Property Zip', 'Zip', 'Site Zip', 'Zip Code', 'property_zip'],
+        'property_type': ['Property Type', 'Type', 'property_type', 'Prop Type'],
+        'beds': ['Beds', 'Bedrooms', 'beds', 'Bed', 'BR'],
+        'baths': ['Baths', 'Bathrooms', 'baths', 'Bath', 'BA'],
+        'sqft': ['SqFt', 'Sq Ft', 'Square Feet', 'sqft', 'Living Area', 'Building Sq Ft'],
+        'lot_size': ['Lot Size', 'Lot SqFt', 'Lot Acres', 'lot_size'],
+        'year_built': ['Year Built', 'Yr Built', 'year_built'],
+        'owner_name': ['Owner Name', 'Owner', 'owner_name', 'Owner 1 Full Name', 'Owner Full Name'],
+        'owner_first_name': ['Owner First Name', 'Owner 1 First Name', 'owner_first_name'],
+        'owner_last_name': ['Owner Last Name', 'Owner 1 Last Name', 'owner_last_name'],
+        'owner_mailing_address': ['Mailing Address', 'Mail Address', 'Owner Mailing Address', 'Mailing Street Address'],
+        'owner_mailing_city': ['Mailing City', 'Mail City', 'Owner Mailing City'],
+        'owner_mailing_state': ['Mailing State', 'Mail State', 'Owner Mailing State'],
+        'owner_mailing_zip': ['Mailing Zip', 'Mail Zip', 'Owner Mailing Zip'],
+        'owner_phone': ['Phone', 'Owner Phone', 'Phone 1', 'owner_phone'],
+        'owner_email': ['Email', 'Owner Email', 'Email 1', 'owner_email'],
+        'estimated_value': ['Est. Value', 'Estimated Value', 'AVM', 'estimated_value', 'Est Value'],
+        'estimated_equity': ['Est. Equity', 'Estimated Equity', 'Equity', 'estimated_equity', 'Est Equity'],
+        'equity_percent': ['Equity %', 'Equity Percent', 'equity_percent', 'LTV'],
+        'mortgage_balance': ['Mortgage Balance', 'Loan Balance', 'Total Loans', 'mortgage_balance', 'Mtg Balance', 'Open Mortgage Balance'],
+        'last_sale_date': ['Last Sale Date', 'Sale Date', 'last_sale_date'],
+        'last_sale_price': ['Last Sale Price', 'Sale Price', 'last_sale_price', 'Last Sale Amount'],
+        'tax_assessed_value': ['Tax Assessed Value', 'Assessed Value', 'Total Assessed Value', 'tax_assessed_value'],
+        'is_absentee': ['Absentee', 'Absentee Owner', 'Owner Occupied', 'is_absentee'],
+        'latitude': ['Latitude', 'Lat', 'latitude'],
+        'longitude': ['Longitude', 'Lng', 'Long', 'longitude'],
+      };
+
+      const autoMapFields = (headers) => {
+        const mapping = {};
+        Object.entries(PROPSTREAM_FIELD_MAP).forEach(([dbField, csvAliases]) => {
+          const match = headers.find(h => csvAliases.some(a => a.toLowerCase() === h.toLowerCase().trim()));
+          if (match) mapping[dbField] = match;
+        });
+        return mapping;
+      };
+
+      const parseCSV = (text) => {
+        const lines = text.split('\n').filter(l => l.trim());
+        if (lines.length < 2) return null;
+        const headers = lines[0].split(',').map(h => h.replace(/^"|"$/g, '').trim());
+        const rows = [];
+        for (let i = 1; i < lines.length; i++) {
+          const values = [];
+          let current = '';
+          let inQuotes = false;
+          for (const char of lines[i]) {
+            if (char === '"') inQuotes = !inQuotes;
+            else if (char === ',' && !inQuotes) { values.push(current.trim()); current = ''; }
+            else current += char;
+          }
+          values.push(current.trim());
+          if (values.length >= headers.length - 2) {
+            const row = {};
+            headers.forEach((h, idx) => { row[h] = values[idx] || ''; });
+            rows.push(row);
+          }
+        }
+        return { headers, rows };
+      };
+
+      const handleFileSelect = (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+        setImportFile(file);
+        const reader = new FileReader();
+        reader.onload = (ev) => {
+          const parsed = parseCSV(ev.target.result);
+          if (parsed) {
+            setImportPreview(parsed);
+            setImportMapping(autoMapFields(parsed.headers));
+          }
+        };
+        reader.readAsText(file);
+      };
+
+      const runImport = async () => {
+        if (!importPreview || !selectedCampaign) return;
+        setImporting(true);
+        const records = importPreview.rows.map(row => {
+          const rec = { campaign_id: selectedCampaign.id, raw_import: row };
+          Object.entries(importMapping).forEach(([dbField, csvCol]) => {
+            let val = row[csvCol];
+            if (!val || val === '') return;
+            if (['beds', 'sqft', 'year_built'].includes(dbField)) val = parseInt(val) || null;
+            else if (['baths', 'estimated_value', 'estimated_equity', 'equity_percent', 'mortgage_balance', 'last_sale_price', 'tax_assessed_value', 'latitude', 'longitude'].includes(dbField)) {
+              val = parseFloat(val.replace(/[$,%]/g, '')) || null;
+            }
+            else if (dbField === 'is_absentee') val = ['yes', 'y', 'true', '1', 'absentee'].includes(val.toLowerCase());
+            else if (dbField === 'last_sale_date') { const d = new Date(val); val = isNaN(d) ? null : d.toISOString().split('T')[0]; }
+            if (val !== null && val !== undefined) rec[dbField] = val;
+          });
+          // Derive years_owned from last_sale_date
+          if (rec.last_sale_date) {
+            const diff = (Date.now() - new Date(rec.last_sale_date).getTime()) / (365.25 * 24 * 60 * 60 * 1000);
+            rec.years_owned = Math.round(diff * 10) / 10;
+          }
+          return rec;
+        });
+        // Batch insert in chunks of 100
+        let inserted = 0;
+        for (let i = 0; i < records.length; i += 100) {
+          const chunk = records.slice(i, i + 100);
+          const { data, error } = await supabase.from('prospects').insert(chunk);
+          if (!error) inserted += chunk.length;
+        }
+        // Update campaign totals
+        await supabase.from('prospect_campaigns').update({ total_imported: inserted }).eq('id', selectedCampaign.id);
+        setSelectedCampaign({ ...selectedCampaign, total_imported: inserted });
+        setImporting(false);
+        setShowImport(false);
+        setImportFile(null);
+        setImportPreview(null);
+        setImportMapping({});
+        fetchProspects();
+      };
+
+      // OUTREACH ACTIONS
+      const approveOutreach = async (id) => {
+        await supabase.from('prospect_outreach').update({ status: 'approved', approved_at: new Date().toISOString() }).eq('id', id);
+        fetchOutreach();
+      };
+
+      const rejectOutreach = async (id) => {
+        await supabase.from('prospect_outreach').update({ status: 'rejected' }).eq('id', id);
+        fetchOutreach();
+      };
+
+      const sendOutreach = async (item) => {
+        if (!window.__amyCRM?.gmailConnected) { alert('Connect Gmail first to send emails.'); return; }
+        const toEmail = item.prospects?.owner_email;
+        if (!toEmail) { alert('No email address for this owner.'); return; }
+        if (!confirm('Send email to ' + toEmail + '?')) return;
+        try {
+          const res = await fetch(SUPABASE_URL + '/functions/v1/gmail', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'apikey': SUPABASE_ANON_KEY },
+            body: JSON.stringify({ action: 'send_email', user_id: window.__amyCRM.userId, to: toEmail, subject: item.subject, email_body: item.body })
+          });
+          const data = await res.json();
+          if (data.success) {
+            await supabase.from('prospect_outreach').update({ status: 'sent', sent_at: new Date().toISOString() }).eq('id', item.id);
+            await supabase.from('prospects').update({ status: 'outreach_sent' }).eq('id', item.prospect_id);
+            fetchOutreach();
+            fetchProspects();
+          } else { alert('Send failed: ' + (data.error || 'Unknown')); }
+        } catch (err) { alert('Error: ' + err.message); }
+      };
+
+      const markProspectStatus = async (ids, newStatus) => {
+        const idArr = Array.isArray(ids) ? ids : [ids];
+        await supabase.from('prospects').update({ status: newStatus }).in('id', idArr);
+        setSelectedProspects(new Set());
+        fetchProspects();
+      };
+
+      const convertToLead = async (prospect) => {
+        // Create contact
+        const nameParts = (prospect.owner_name || '').split(' ');
+        const { data: contact } = await supabase.from('contacts').insert([{
+          first_name: prospect.owner_first_name || nameParts[0] || 'Unknown',
+          last_name: prospect.owner_last_name || nameParts.slice(1).join(' ') || '',
+          email: prospect.owner_email,
+          phone: prospect.owner_phone,
+          address_street: prospect.owner_mailing_address,
+          address_city: prospect.owner_mailing_city,
+          address_state: prospect.owner_mailing_state,
+          address_zip: prospect.owner_mailing_zip,
+          contact_type: 'lead',
+          source: 'other',
+          source_detail: 'Prospecting Agent - ' + (selectedCampaign?.name || ''),
+        }]).select().single();
+        if (!contact) { alert('Failed to create contact'); return; }
+        // Create lead
+        const { data: stages } = await supabase.from('pipeline_stages').select('id').eq('name', 'New Lead').single();
+        const { data: lead } = await supabase.from('leads').insert([{
+          contact_id: contact.id,
+          stage_id: stages?.id,
+          lead_type: 'seller',
+          temperature: 'warm',
+        }]).select().single();
+        // Update prospect
+        await supabase.from('prospects').update({
+          status: 'converted',
+          contact_id: contact.id,
+          lead_id: lead?.id,
+        }).eq('id', prospect.id);
+        // Update campaign totals
+        await supabase.from('prospect_campaigns').update({
+          total_converted: (selectedCampaign.total_converted || 0) + 1
+        }).eq('id', selectedCampaign.id);
+        fetchProspects();
+        alert('Converted! ' + (prospect.owner_name || 'Owner') + ' added to pipeline as seller lead.');
+      };
+
+      const formatCurrency = (v) => v ? '$' + Number(v).toLocaleString() : '—';
+      const formatDate = (d) => d ? new Date(d).toLocaleDateString() : '—';
+
+      // ---- CAMPAIGNS LIST VIEW ----
+      if (view === 'campaigns' && !selectedCampaign) {
+        return (
+          <div className="flex-1 overflow-y-auto p-6">
+            <div className="flex items-center justify-between mb-6">
+              <div>
+                <h2 className="text-lg font-semibold" style={{color:'#7F1330'}}>Prospecting Agent</h2>
+                <p className="text-secondary text-sm mt-1">Import property lists, generate valuations, and manage outreach campaigns</p>
+              </div>
+              <button onClick={() => setShowNewCampaign(true)} className="btn-primary">+ New Campaign</button>
+            </div>
+
+            {showNewCampaign && (
+              <div className="glass p-5 mb-6">
+                <h3 className="font-medium mb-3">Create Campaign</h3>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-3">
+                  <input className="input-glass" placeholder="Campaign name (e.g. May 2026 — High Equity Absentee)" value={newCampaign.name} onChange={e => setNewCampaign({...newCampaign, name: e.target.value})} />
+                  <input className="input-glass" placeholder="Description (optional)" value={newCampaign.description} onChange={e => setNewCampaign({...newCampaign, description: e.target.value})} />
+                  <select className="input-glass" value={newCampaign.source} onChange={e => setNewCampaign({...newCampaign, source: e.target.value})}>
+                    <option value="propstream">PropStream</option>
+                    <option value="mls_export">MLS Export</option>
+                    <option value="manual">Manual</option>
+                    <option value="other">Other</option>
+                  </select>
+                </div>
+                <div className="flex gap-2">
+                  <button onClick={createCampaign} className="btn-primary">Create</button>
+                  <button onClick={() => setShowNewCampaign(false)} className="btn-secondary">Cancel</button>
+                </div>
+              </div>
+            )}
+
+            {loading ? <p className="text-secondary">Loading...</p> : campaigns.length === 0 ? (
+              <div className="glass p-12 text-center">
+                <p className="text-secondary mb-2">No campaigns yet</p>
+                <p className="text-secondary text-sm">Create a campaign, then import a PropStream CSV to get started.</p>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {campaigns.map(c => (
+                  <div key={c.id} onClick={() => { setSelectedCampaign(c); setView('queue'); }} className="glass-hover p-5 cursor-pointer">
+                    <div className="flex items-start justify-between mb-3">
+                      <div>
+                        <h3 className="font-medium">{c.name}</h3>
+                        {c.description && <p className="text-secondary text-xs mt-1">{c.description}</p>}
+                      </div>
+                      <span className="badge" style={{background: c.status === 'active' ? '#E8F9EE' : '#F5F5F5', color: c.status === 'active' ? '#22c55e' : '#999'}}>{c.status}</span>
+                    </div>
+                    <div className="flex gap-4 text-xs text-secondary">
+                      <span>{c.total_imported || 0} imported</span>
+                      <span>{c.total_outreach_sent || 0} sent</span>
+                      <span>{c.total_replies || 0} replies</span>
+                      <span style={{color:'#22c55e', fontWeight:500}}>{c.total_converted || 0} converted</span>
+                    </div>
+                    <p className="text-xs text-secondary mt-2">{formatDate(c.created_at)}</p>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        );
+      }
+
+      // ---- CAMPAIGN DETAIL VIEW (queue / outbox / active) ----
+      return (
+        <div className="flex-1 overflow-hidden flex flex-col">
+          {/* Campaign header */}
+          <div className="px-6 pt-5 pb-3 border-b border-[#F0D5CC] bg-white">
+            <div className="flex items-center gap-3 mb-3">
+              <button onClick={() => { setSelectedCampaign(null); setView('campaigns'); }} className="text-secondary hover:text-[#7F1330] transition text-sm">&larr; All Campaigns</button>
+              <h2 className="font-semibold" style={{color:'#7F1330'}}>{selectedCampaign?.name}</h2>
+            </div>
+
+            {/* Stats bar */}
+            <div className="flex gap-5 mb-3 text-xs">
+              <div className="text-center"><span className="block text-lg font-semibold">{stats.imported}</span><span className="text-secondary">Imported</span></div>
+              <div className="text-center"><span className="block text-lg font-semibold">{stats.valued}</span><span className="text-secondary">Valued</span></div>
+              <div className="text-center"><span className="block text-lg font-semibold">{stats.queued}</span><span className="text-secondary">Queued</span></div>
+              <div className="text-center"><span className="block text-lg font-semibold">{stats.sent}</span><span className="text-secondary">Sent</span></div>
+              <div className="text-center"><span className="block text-lg font-semibold" style={{color: stats.replied > 0 ? '#22c55e' : undefined}}>{stats.replied}</span><span className="text-secondary">Replied</span></div>
+              <div className="text-center"><span className="block text-lg font-semibold" style={{color: stats.converted > 0 ? '#7F1330' : undefined}}>{stats.converted}</span><span className="text-secondary">Converted</span></div>
+            </div>
+
+            {/* View tabs */}
+            <div className="flex gap-1">
+              {[
+                { id: 'queue', label: 'Queue', desc: 'Review & approve' },
+                { id: 'outbox', label: 'Outbox', desc: 'Drafts & send' },
+                { id: 'active', label: 'Active', desc: 'Sent & replies' },
+              ].map(t => (
+                <button key={t.id} onClick={() => setView(t.id)} className="px-4 py-2 text-xs font-medium transition-all" style={{ borderBottom: view === t.id ? '2px solid #7F1330' : '2px solid transparent', color: view === t.id ? '#7F1330' : '#7A5A5A' }}>
+                  {t.label}
+                </button>
+              ))}
+              <div className="flex-1" />
+              <button onClick={() => setShowImport(true)} className="btn-primary text-xs">Import CSV</button>
+            </div>
+          </div>
+
+          {/* Import modal */}
+          {showImport && (
+            <div style={{position:'fixed', inset:0, background:'rgba(0,0,0,0.3)', zIndex:2000, display:'flex', alignItems:'center', justifyContent:'center'}} onClick={() => setShowImport(false)}>
+              <div className="glass p-6" style={{width:'700px', maxHeight:'80vh', overflow:'auto'}} onClick={e => e.stopPropagation()}>
+                <h3 className="font-semibold mb-4">Import PropStream CSV</h3>
+                <input type="file" accept=".csv" onChange={handleFileSelect} className="mb-4 text-sm" />
+                {importPreview && (
+                  <div>
+                    <p className="text-sm mb-3 text-secondary">{importPreview.rows.length} records found &middot; {Object.keys(importMapping).length} fields auto-mapped</p>
+                    <div className="mb-4" style={{maxHeight:'300px', overflow:'auto'}}>
+                      <table className="w-full text-xs">
+                        <thead>
+                          <tr className="border-b border-[#F0D5CC]">
+                            <th className="text-left py-2 px-2 font-medium">Our Field</th>
+                            <th className="text-left py-2 px-2 font-medium">CSV Column</th>
+                            <th className="text-left py-2 px-2 font-medium">Sample</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {Object.entries(PROPSTREAM_FIELD_MAP).map(([dbField]) => (
+                            <tr key={dbField} className="border-b border-[#F0D5CC]/50">
+                              <td className="py-1.5 px-2 font-medium">{dbField.replace(/_/g, ' ')}</td>
+                              <td className="py-1.5 px-2">
+                                <select className="input-glass text-xs py-1 px-2" value={importMapping[dbField] || ''} onChange={e => setImportMapping({...importMapping, [dbField]: e.target.value})}>
+                                  <option value="">— skip —</option>
+                                  {importPreview.headers.map(h => <option key={h} value={h}>{h}</option>)}
+                                </select>
+                              </td>
+                              <td className="py-1.5 px-2 text-secondary">{importMapping[dbField] ? (importPreview.rows[0]?.[importMapping[dbField]] || '').substring(0, 40) : ''}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                    <div className="flex gap-2">
+                      <button onClick={runImport} disabled={importing} className="btn-primary">{importing ? 'Importing...' : 'Import ' + importPreview.rows.length + ' Records'}</button>
+                      <button onClick={() => { setShowImport(false); setImportPreview(null); }} className="btn-secondary">Cancel</button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Prospect detail slide panel */}
+          <div className={`slide-panel ${detailProspect ? 'active' : ''}`} style={{width:'480px'}}>
+            {detailProspect && (
+              <div className="p-6">
+                <div className="flex items-start justify-between mb-4">
+                  <h3 className="font-semibold">{detailProspect.property_address}</h3>
+                  <button onClick={() => setDetailProspect(null)}><IconClose /></button>
+                </div>
+                <p className="text-secondary text-sm mb-4">{detailProspect.property_city}, {detailProspect.property_state} {detailProspect.property_zip}</p>
+
+                <div className="grid grid-cols-2 gap-3 mb-4">
+                  <div className="glass p-3"><p className="text-xs text-secondary">Est. Value</p><p className="font-semibold">{formatCurrency(detailProspect.estimated_value)}</p></div>
+                  <div className="glass p-3"><p className="text-xs text-secondary">Our Valuation</p><p className="font-semibold" style={{color:'#7F1330'}}>{formatCurrency(detailProspect.our_valuation)}</p></div>
+                  <div className="glass p-3"><p className="text-xs text-secondary">Equity</p><p className="font-semibold">{formatCurrency(detailProspect.estimated_equity)} {detailProspect.equity_percent ? '(' + detailProspect.equity_percent + '%)' : ''}</p></div>
+                  <div className="glass p-3"><p className="text-xs text-secondary">Mortgage</p><p className="font-semibold">{formatCurrency(detailProspect.mortgage_balance)}</p></div>
+                </div>
+
+                <div className="grid grid-cols-3 gap-3 mb-4 text-xs">
+                  <div><span className="text-secondary">Beds:</span> {detailProspect.beds || '—'}</div>
+                  <div><span className="text-secondary">Baths:</span> {detailProspect.baths || '—'}</div>
+                  <div><span className="text-secondary">SqFt:</span> {detailProspect.sqft?.toLocaleString() || '—'}</div>
+                  <div><span className="text-secondary">Built:</span> {detailProspect.year_built || '—'}</div>
+                  <div><span className="text-secondary">Type:</span> {detailProspect.property_type || '—'}</div>
+                  <div><span className="text-secondary">Yrs Owned:</span> {detailProspect.years_owned || '—'}</div>
+                </div>
+
+                <h4 className="font-medium text-sm mb-2 mt-4">Owner Info</h4>
+                <div className="text-xs space-y-1.5 mb-4">
+                  <p><span className="text-secondary">Name:</span> {detailProspect.owner_name || '—'}</p>
+                  <p><span className="text-secondary">Phone:</span> {detailProspect.owner_phone || '—'}</p>
+                  <p><span className="text-secondary">Email:</span> {detailProspect.owner_email || '—'}</p>
+                  <p><span className="text-secondary">Mailing:</span> {[detailProspect.owner_mailing_address, detailProspect.owner_mailing_city, detailProspect.owner_mailing_state, detailProspect.owner_mailing_zip].filter(Boolean).join(', ') || '—'}</p>
+                  <p><span className="text-secondary">Absentee:</span> {detailProspect.is_absentee ? 'Yes' : 'No'}</p>
+                </div>
+
+                <h4 className="font-medium text-sm mb-2">Signals</h4>
+                <div className="flex flex-wrap gap-1.5 mb-4">
+                  {detailProspect.is_absentee && <span className="badge badge-warm">Absentee</span>}
+                  {detailProspect.is_pre_foreclosure && <span className="badge badge-hot">Pre-Foreclosure</span>}
+                  {detailProspect.is_tax_lien && <span className="badge badge-hot">Tax Lien</span>}
+                  {detailProspect.is_vacant && <span className="badge badge-warm">Vacant</span>}
+                  {detailProspect.equity_percent > 50 && <span className="badge" style={{background:'#E8F9EE', color:'#16a34a'}}>High Equity</span>}
+                  {detailProspect.years_owned > 10 && <span className="badge" style={{background:'#EEF2FF', color:'#4f46e5'}}>Long-term Owner</span>}
+                </div>
+
+                <div className="flex gap-2 mt-4">
+                  {detailProspect.status === 'imported' && <button onClick={() => markProspectStatus(detailProspect.id, 'queued')} className="btn-primary text-xs">Queue for Outreach</button>}
+                  {['replied', 'in_conversation'].includes(detailProspect.status) && <button onClick={() => convertToLead(detailProspect)} className="btn-primary text-xs">Convert to Lead</button>}
+                  <button onClick={() => markProspectStatus(detailProspect.id, 'passed')} className="btn-secondary text-xs">Pass</button>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Main content area */}
+          <div className="flex-1 overflow-y-auto p-6">
+            {/* QUEUE VIEW */}
+            {view === 'queue' && (
+              <div>
+                {selectedProspects.size > 0 && (
+                  <div className="glass p-3 mb-4 flex items-center gap-3">
+                    <span className="text-sm font-medium">{selectedProspects.size} selected</span>
+                    <button onClick={() => markProspectStatus([...selectedProspects], 'queued')} className="btn-primary text-xs">Queue Selected</button>
+                    <button onClick={() => markProspectStatus([...selectedProspects], 'passed')} className="btn-secondary text-xs">Pass Selected</button>
+                    <button onClick={() => setSelectedProspects(new Set())} className="btn-secondary text-xs">Clear</button>
+                  </div>
+                )}
+                {prospects.length === 0 ? (
+                  <div className="glass p-12 text-center">
+                    <p className="text-secondary mb-2">No prospects in queue</p>
+                    <p className="text-secondary text-sm">Import a PropStream CSV to populate this campaign.</p>
+                  </div>
+                ) : (
+                  <table className="w-full text-xs">
+                    <thead>
+                      <tr className="border-b border-[#F0D5CC] text-left">
+                        <th className="py-2 px-2 w-8"><input type="checkbox" className="checkbox-glass" style={{width:14,height:14}} onChange={e => { if (e.target.checked) setSelectedProspects(new Set(prospects.map(p=>p.id))); else setSelectedProspects(new Set()); }} /></th>
+                        <th className="py-2 px-2 font-medium">Address</th>
+                        <th className="py-2 px-2 font-medium">Owner</th>
+                        <th className="py-2 px-2 font-medium">Est. Value</th>
+                        <th className="py-2 px-2 font-medium">Equity</th>
+                        <th className="py-2 px-2 font-medium">Signals</th>
+                        <th className="py-2 px-2 font-medium">Status</th>
+                        <th className="py-2 px-2 font-medium">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {prospects.map(p => (
+                        <tr key={p.id} className="border-b border-[#F0D5CC]/30 hover:bg-[#FFF5F0] transition cursor-pointer" onClick={() => setDetailProspect(p)}>
+                          <td className="py-2 px-2" onClick={e => e.stopPropagation()}>
+                            <input type="checkbox" className="checkbox-glass" style={{width:14,height:14}} checked={selectedProspects.has(p.id)} onChange={e => { const s = new Set(selectedProspects); if (e.target.checked) s.add(p.id); else s.delete(p.id); setSelectedProspects(s); }} />
+                          </td>
+                          <td className="py-2 px-2">
+                            <span className="font-medium">{p.property_address}</span>
+                            <br /><span className="text-secondary">{p.property_city}, {p.property_state} {p.property_zip}</span>
+                          </td>
+                          <td className="py-2 px-2">{p.owner_name || '—'}<br /><span className="text-secondary">{p.owner_email || p.owner_phone || ''}</span></td>
+                          <td className="py-2 px-2">{formatCurrency(p.estimated_value)}</td>
+                          <td className="py-2 px-2">{formatCurrency(p.estimated_equity)}{p.equity_percent ? <span className="text-secondary ml-1">({p.equity_percent}%)</span> : ''}</td>
+                          <td className="py-2 px-2">
+                            <div className="flex flex-wrap gap-1">
+                              {p.is_absentee && <span className="badge badge-warm" style={{fontSize:9, padding:'1px 6px'}}>Absentee</span>}
+                              {p.is_pre_foreclosure && <span className="badge badge-hot" style={{fontSize:9, padding:'1px 6px'}}>Pre-FC</span>}
+                              {p.is_vacant && <span className="badge badge-warm" style={{fontSize:9, padding:'1px 6px'}}>Vacant</span>}
+                              {p.equity_percent > 50 && <span className="badge" style={{background:'#E8F9EE', color:'#16a34a', fontSize:9, padding:'1px 6px'}}>Hi Eq</span>}
+                            </div>
+                          </td>
+                          <td className="py-2 px-2"><span className="badge" style={{background: p.status==='queued'?'#E8F9EE':'#FFF5F0', color: p.status==='queued'?'#16a34a':'#7A5A5A', fontSize:10}}>{p.status}</span></td>
+                          <td className="py-2 px-2" onClick={e => e.stopPropagation()}>
+                            <div className="flex gap-1">
+                              {p.status === 'imported' && <button onClick={() => markProspectStatus(p.id, 'queued')} className="btn-primary" style={{fontSize:10,padding:'3px 8px'}}>Queue</button>}
+                              <button onClick={() => markProspectStatus(p.id, 'passed')} className="btn-secondary" style={{fontSize:10,padding:'3px 8px'}}>Pass</button>
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+              </div>
+            )}
+
+            {/* OUTBOX VIEW */}
+            {view === 'outbox' && (
+              <div>
+                {outreach.length === 0 ? (
+                  <div className="glass p-12 text-center">
+                    <p className="text-secondary mb-2">No drafts in outbox</p>
+                    <p className="text-secondary text-sm">Queue prospects and generate outreach to see drafts here.</p>
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    {outreach.map(o => (
+                      <div key={o.id} className="glass p-4">
+                        <div className="flex items-start justify-between mb-2">
+                          <div>
+                            <p className="font-medium text-sm">{o.prospects?.property_address || 'Unknown'}</p>
+                            <p className="text-secondary text-xs">{o.prospects?.owner_name} &middot; {o.prospects?.owner_email || 'No email'}</p>
+                          </div>
+                          <span className="badge" style={{background: o.status==='draft'?'#FFEEE3':o.status==='approved'?'#E8F9EE':'#F5F5F5', color: o.status==='draft'?'#FE8982':o.status==='approved'?'#22c55e':'#999'}}>{o.status}</span>
+                        </div>
+                        <div className="bg-[#FFF5F0] rounded-lg p-3 mb-3">
+                          <p className="text-xs font-medium mb-1">{o.subject}</p>
+                          <p className="text-xs text-secondary whitespace-pre-wrap">{o.body}</p>
+                        </div>
+                        <div className="flex gap-2">
+                          {o.status === 'draft' && (
+                            <>
+                              <button onClick={() => approveOutreach(o.id)} className="btn-primary text-xs">Approve</button>
+                              <button onClick={() => rejectOutreach(o.id)} className="btn-secondary text-xs">Reject</button>
+                            </>
+                          )}
+                          {o.status === 'approved' && (
+                            <button onClick={() => sendOutreach(o)} className="btn-primary text-xs">Send Now</button>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* ACTIVE VIEW */}
+            {view === 'active' && (
+              <div>
+                {prospects.length === 0 && outreach.length === 0 ? (
+                  <div className="glass p-12 text-center">
+                    <p className="text-secondary mb-2">No active outreach</p>
+                    <p className="text-secondary text-sm">Sent emails and replies will appear here.</p>
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    {outreach.map(o => (
+                      <div key={o.id} className="glass p-4">
+                        <div className="flex items-start justify-between mb-2">
+                          <div>
+                            <p className="font-medium text-sm">{o.prospects?.property_address || 'Unknown'}</p>
+                            <p className="text-secondary text-xs">{o.prospects?.owner_name} &middot; {o.prospects?.owner_email || ''}</p>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <span className="badge" style={{
+                              background: o.status==='replied'?'#E8F9EE':o.status==='opened'?'#EEF2FF':'#FFF5F0',
+                              color: o.status==='replied'?'#22c55e':o.status==='opened'?'#4f46e5':'#7A5A5A'
+                            }}>{o.status}</span>
+                            {o.sent_at && <span className="text-xs text-secondary">Sent {formatDate(o.sent_at)}</span>}
+                          </div>
+                        </div>
+                        <div className="bg-[#FFF5F0] rounded-lg p-3 mb-2">
+                          <p className="text-xs font-medium mb-1">{o.subject}</p>
+                          <p className="text-xs text-secondary whitespace-pre-wrap">{(o.body || '').substring(0, 200)}{o.body?.length > 200 ? '...' : ''}</p>
+                        </div>
+                        {o.reply_body && (
+                          <div className="bg-[#E8F9EE] rounded-lg p-3 mb-2">
+                            <p className="text-xs font-medium mb-1">Reply {o.reply_sentiment && <span className="badge" style={{fontSize:9, padding:'1px 6px'}}>{o.reply_sentiment}</span>}</p>
+                            <p className="text-xs whitespace-pre-wrap">{o.reply_body}</p>
+                          </div>
+                        )}
+                        {o.status === 'replied' && (
+                          <div className="flex gap-2 mt-2">
+                            <button onClick={() => { const pr = prospects.find(p => p.id === o.prospect_id); if (pr) convertToLead(pr); }} className="btn-primary text-xs">Convert to Lead</button>
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      );
+    }
+
     // AI SMART NOTES BAR
     function AssistantBar() {
       const [noteText, setNoteText] = useState('');
@@ -3809,6 +4450,7 @@
         { id:'financials', label:'Financials', icon:IconFinancials },
         { id:'notes', label:'Notes', icon:IconNotes },
         { id:'reports', label:'Reports', icon:IconReports },
+        { id:'prospecting', label:'Prospecting', icon:IconProspecting },
       ];
 
       const handleNavClick = (id) => {
@@ -3830,6 +4472,7 @@
           case 'financials': return <Financials />;
           case 'notes': return <Notes />;
           case 'reports': return <Reports />;
+          case 'prospecting': return <Prospecting />;
           default: return <CommandCenter />;
         }
       };
