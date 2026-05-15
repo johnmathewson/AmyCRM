@@ -3596,7 +3596,7 @@
       const [selectedCampaign, setSelectedCampaign] = useState(null);
       const [prospects, setProspects] = useState([]);
       const [outreach, setOutreach] = useState([]);
-      const [view, setView] = useState('campaigns'); // campaigns | queue | outbox | active
+      const [view, setView] = useState('campaigns'); // campaigns | cold | queue | sent | replied
       const [loading, setLoading] = useState(true);
       const [showImport, setShowImport] = useState(false);
       const [showNewCampaign, setShowNewCampaign] = useState(false);
@@ -3629,8 +3629,10 @@
       const fetchProspects = async () => {
         if (!selectedCampaign) return;
         let query = supabase.from('prospects').select('*').eq('campaign_id', selectedCampaign.id);
-        if (view === 'queue') query = query.in('status', ['imported', 'valued', 'queued']);
-        else if (view === 'active') query = query.in('status', ['outreach_sent', 'replied', 'in_conversation']);
+        if (view === 'cold') query = query.in('status', ['imported', 'valued']);
+        else if (view === 'queue') query = query.in('status', ['queued']);
+        else if (view === 'sent') query = query.in('status', ['outreach_sent']);
+        else if (view === 'replied') query = query.in('status', ['replied', 'in_conversation', 'converted']);
         const { data } = await query.order('created_at', { ascending: false });
         setProspects(data || []);
         // Update stats
@@ -3651,9 +3653,10 @@
 
       const fetchOutreach = async () => {
         if (!selectedCampaign) return;
-        let query = supabase.from('prospect_outreach').select('*, prospects(property_address, property_city, property_zip, owner_name, owner_email, our_valuation)').eq('campaign_id', selectedCampaign.id);
-        if (view === 'outbox') query = query.in('status', ['draft', 'approved']);
-        else if (view === 'active') query = query.in('status', ['sent', 'opened', 'replied']);
+        let query = supabase.from('prospect_outreach').select('*, prospects(id, property_address, property_city, property_zip, owner_name, owner_email, owner_phone, our_valuation, estimated_value, status)').eq('campaign_id', selectedCampaign.id);
+        if (view === 'queue') query = query.in('status', ['draft', 'approved']);
+        else if (view === 'sent') query = query.in('status', ['sent', 'opened']);
+        else if (view === 'replied') query = query.in('status', ['replied']);
         const { data } = await query.order('created_at', { ascending: false });
         setOutreach(data || []);
       };
@@ -3666,7 +3669,7 @@
           setSelectedCampaign(data);
           setShowNewCampaign(false);
           setNewCampaign({ name: '', description: '', source: 'propstream' });
-          setView('queue');
+          setView('cold');
         }
       };
 
@@ -3828,6 +3831,14 @@
         const idArr = Array.isArray(ids) ? ids : [ids];
         await supabase.from('prospects').update({ status: newStatus }).in('id', idArr);
         setSelectedProspects(new Set());
+        // Auto-generate outreach when queuing prospects that have email addresses
+        if (newStatus === 'queued') {
+          const { data: withEmail } = await supabase.from('prospects').select('id, owner_email').in('id', idArr);
+          const emailIds = (withEmail || []).filter(p => p.owner_email).map(p => p.id);
+          if (emailIds.length > 0) {
+            generateOutreach(emailIds);
+          }
+        }
         fetchProspects();
       };
 
@@ -3954,7 +3965,7 @@
             ) : (
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 {campaigns.map(c => (
-                  <div key={c.id} onClick={() => { setSelectedCampaign(c); setView('queue'); }} className="glass-hover p-5 cursor-pointer">
+                  <div key={c.id} onClick={() => { setSelectedCampaign(c); setView('cold'); }} className="glass-hover p-5 cursor-pointer">
                     <div className="flex items-start justify-between mb-3">
                       <div>
                         <h3 className="font-medium">{c.name}</h3>
@@ -4000,9 +4011,10 @@
             {/* View tabs */}
             <div className="flex gap-1">
               {[
-                { id: 'queue', label: 'Queue', desc: 'Review & approve' },
-                { id: 'outbox', label: 'Outbox', desc: 'Drafts & send' },
-                { id: 'active', label: 'Active', desc: 'Sent & replies' },
+                { id: 'cold', label: 'Cold' },
+                { id: 'queue', label: 'Queue' },
+                { id: 'sent', label: 'Sent' },
+                { id: 'replied', label: 'Replied' },
               ].map(t => (
                 <button key={t.id} onClick={() => setView(t.id)} className="px-4 py-2 text-xs font-medium transition-all" style={{ borderBottom: view === t.id ? '2px solid #7F1330' : '2px solid transparent', color: view === t.id ? '#7F1330' : '#7A5A5A' }}>
                   {t.label}
@@ -4103,10 +4115,9 @@
                 </div>
 
                 <div className="flex gap-2 mt-4 flex-wrap">
-                  {['imported', 'valued', 'queued'].includes(detailProspect.status) && detailProspect.owner_email && <button onClick={() => { generateOutreach([detailProspect.id]); setDetailProspect(null); }} disabled={generating} className="btn-primary text-xs">{generating ? 'Generating...' : 'Generate Outreach'}</button>}
-                  {detailProspect.status === 'imported' && <button onClick={() => markProspectStatus(detailProspect.id, 'queued')} className="btn-primary text-xs">Queue for Outreach</button>}
+                  {['imported', 'valued'].includes(detailProspect.status) && <button onClick={() => { markProspectStatus(detailProspect.id, 'queued'); setDetailProspect(null); }} disabled={generating} className="btn-primary text-xs">{generating ? 'Queuing...' : 'Queue'}</button>}
                   {['replied', 'in_conversation'].includes(detailProspect.status) && <button onClick={() => convertToLead(detailProspect)} className="btn-primary text-xs">Convert to Lead</button>}
-                  <button onClick={() => markProspectStatus(detailProspect.id, 'passed')} className="btn-secondary text-xs">Pass</button>
+                  <button onClick={() => { markProspectStatus(detailProspect.id, 'passed'); setDetailProspect(null); }} className="btn-secondary text-xs">Pass</button>
                 </div>
               </div>
             )}
@@ -4114,27 +4125,28 @@
 
           {/* Main content area */}
           <div className="flex-1 overflow-y-auto p-6">
-            {/* QUEUE VIEW */}
-            {view === 'queue' && (
+            {/* Generation progress banner */}
+            {generating && genProgress && (
+              <div className="glass p-3 mb-4 flex items-center gap-3" style={{borderColor:'#7F1330'}}>
+                <div className="ai-sparkle">&#x2728;</div>
+                <span className="text-sm font-medium" style={{color:'#7F1330'}}>{genProgress}</span>
+              </div>
+            )}
+
+            {/* COLD VIEW — imported prospects, not yet actioned */}
+            {view === 'cold' && (
               <div>
-                {generating && genProgress && (
-                  <div className="glass p-3 mb-4 flex items-center gap-3" style={{borderColor:'#7F1330'}}>
-                    <div className="ai-sparkle">&#x2728;</div>
-                    <span className="text-sm font-medium" style={{color:'#7F1330'}}>{genProgress}</span>
-                  </div>
-                )}
                 {selectedProspects.size > 0 && (
                   <div className="glass p-3 mb-4 flex items-center gap-3">
                     <span className="text-sm font-medium">{selectedProspects.size} selected</span>
-                    <button onClick={() => generateOutreach([...selectedProspects])} disabled={generating} className="btn-primary text-xs" style={{background: generating ? '#ccc' : '#7F1330'}}>{generating ? 'Generating...' : 'Generate Outreach'}</button>
-                    <button onClick={() => markProspectStatus([...selectedProspects], 'queued')} className="btn-primary text-xs">Queue Selected</button>
+                    <button onClick={() => markProspectStatus([...selectedProspects], 'queued')} disabled={generating} className="btn-primary text-xs" style={{background: generating ? '#ccc' : '#7F1330'}}>{generating ? 'Queuing...' : 'Queue Selected'}</button>
                     <button onClick={() => markProspectStatus([...selectedProspects], 'passed')} className="btn-secondary text-xs">Pass Selected</button>
                     <button onClick={() => setSelectedProspects(new Set())} className="btn-secondary text-xs">Clear</button>
                   </div>
                 )}
                 {prospects.length === 0 ? (
                   <div className="glass p-12 text-center">
-                    <p className="text-secondary mb-2">No prospects in queue</p>
+                    <p className="text-secondary mb-2">No cold prospects</p>
                     <p className="text-secondary text-sm">Import a PropStream CSV to populate this campaign.</p>
                   </div>
                 ) : (
@@ -4147,7 +4159,6 @@
                         <th className="py-2 px-2 font-medium">Est. Value</th>
                         <th className="py-2 px-2 font-medium">Equity</th>
                         <th className="py-2 px-2 font-medium">Signals</th>
-                        <th className="py-2 px-2 font-medium">Status</th>
                         <th className="py-2 px-2 font-medium">Actions</th>
                       </tr>
                     </thead>
@@ -4170,12 +4181,12 @@
                               {p.is_pre_foreclosure && <span className="badge badge-hot" style={{fontSize:9, padding:'1px 6px'}}>Pre-FC</span>}
                               {p.is_vacant && <span className="badge badge-warm" style={{fontSize:9, padding:'1px 6px'}}>Vacant</span>}
                               {p.equity_percent > 50 && <span className="badge" style={{background:'#E8F9EE', color:'#16a34a', fontSize:9, padding:'1px 6px'}}>Hi Eq</span>}
+                              {!p.owner_email && <span className="badge" style={{background:'#FFF5F0', color:'#B72552', fontSize:9, padding:'1px 6px'}}>No Email</span>}
                             </div>
                           </td>
-                          <td className="py-2 px-2"><span className="badge" style={{background: p.status==='queued'?'#E8F9EE':'#FFF5F0', color: p.status==='queued'?'#16a34a':'#7A5A5A', fontSize:10}}>{p.status}</span></td>
                           <td className="py-2 px-2" onClick={e => e.stopPropagation()}>
                             <div className="flex gap-1">
-                              {p.status === 'imported' && <button onClick={() => markProspectStatus(p.id, 'queued')} className="btn-primary" style={{fontSize:10,padding:'3px 8px'}}>Queue</button>}
+                              <button onClick={() => markProspectStatus(p.id, 'queued')} disabled={generating} className="btn-primary" style={{fontSize:10,padding:'3px 8px'}}>{generating ? '...' : 'Queue'}</button>
                               <button onClick={() => markProspectStatus(p.id, 'passed')} className="btn-secondary" style={{fontSize:10,padding:'3px 8px'}}>Pass</button>
                             </div>
                           </td>
@@ -4187,13 +4198,13 @@
               </div>
             )}
 
-            {/* OUTBOX VIEW */}
-            {view === 'outbox' && (
+            {/* QUEUE VIEW — drafted outreach, review and send */}
+            {view === 'queue' && (
               <div>
-                {outreach.length === 0 ? (
+                {outreach.length === 0 && prospects.length === 0 ? (
                   <div className="glass p-12 text-center">
-                    <p className="text-secondary mb-2">No drafts in outbox</p>
-                    <p className="text-secondary text-sm">Queue prospects and generate outreach to see drafts here.</p>
+                    <p className="text-secondary mb-2">Queue is empty</p>
+                    <p className="text-secondary text-sm">Move prospects from Cold to Queue — outreach emails will be drafted automatically.</p>
                   </div>
                 ) : (
                   <div className="space-y-3">
@@ -4201,26 +4212,29 @@
                       <div key={o.id} className="glass p-4">
                         <div className="flex items-start justify-between mb-2">
                           <div>
-                            <p className="font-medium text-sm">{o.prospects?.property_address || 'Unknown'}</p>
-                            <p className="text-secondary text-xs">{o.prospects?.owner_name} &middot; {o.prospects?.owner_email || 'No email'}</p>
+                            <p className="font-medium text-sm">{o.prospects?.property_address || 'Unknown'}, {o.prospects?.property_city}</p>
+                            <p className="text-secondary text-xs">To: {o.prospects?.owner_name} &middot; {o.prospects?.owner_email || 'No email'}</p>
                           </div>
                           <span className="badge" style={{background: o.status==='draft'?'#FFEEE3':o.status==='approved'?'#E8F9EE':'#F5F5F5', color: o.status==='draft'?'#FE8982':o.status==='approved'?'#22c55e':'#999'}}>{o.status}</span>
                         </div>
                         <div className="bg-[#FFF5F0] rounded-lg p-3 mb-3">
-                          <p className="text-xs font-medium mb-1">{o.subject}</p>
-                          <p className="text-xs text-secondary whitespace-pre-wrap">{o.body}</p>
+                          <p className="text-xs font-medium mb-1">Subject: {o.subject}</p>
+                          <p className="text-xs text-secondary whitespace-pre-wrap mt-2">{o.body}</p>
                         </div>
-                        <div className="flex gap-2">
-                          {o.status === 'draft' && (
-                            <>
-                              <button onClick={() => approveOutreach(o.id)} className="btn-primary text-xs">Approve</button>
-                              <button onClick={() => regenerateOutreach(o.id)} className="btn-secondary text-xs">Regenerate</button>
-                              <button onClick={() => rejectOutreach(o.id)} className="btn-secondary text-xs">Reject</button>
-                            </>
-                          )}
-                          {o.status === 'approved' && (
-                            <button onClick={() => sendOutreach(o)} className="btn-primary text-xs">Send Now</button>
-                          )}
+                        <div className="flex items-center gap-2">
+                          <p className="text-xs text-secondary flex-1">Est. Value: {formatCurrency(o.prospects?.our_valuation || o.prospects?.estimated_value)}</p>
+                          <div className="flex gap-2">
+                            {o.status === 'draft' && (
+                              <>
+                                <button onClick={() => sendOutreach(o)} className="btn-primary text-xs">Send</button>
+                                <button onClick={() => regenerateOutreach(o.id)} className="btn-secondary text-xs">Regenerate</button>
+                                <button onClick={() => rejectOutreach(o.id)} className="btn-secondary text-xs">Discard</button>
+                              </>
+                            )}
+                            {o.status === 'approved' && (
+                              <button onClick={() => sendOutreach(o)} className="btn-primary text-xs">Send Now</button>
+                            )}
+                          </div>
                         </div>
                       </div>
                     ))}
@@ -4229,13 +4243,13 @@
               </div>
             )}
 
-            {/* ACTIVE VIEW */}
-            {view === 'active' && (
+            {/* SENT VIEW — emails that have been sent */}
+            {view === 'sent' && (
               <div>
-                {prospects.length === 0 && outreach.length === 0 ? (
+                {outreach.length === 0 ? (
                   <div className="glass p-12 text-center">
-                    <p className="text-secondary mb-2">No active outreach</p>
-                    <p className="text-secondary text-sm">Sent emails and replies will appear here.</p>
+                    <p className="text-secondary mb-2">No sent outreach yet</p>
+                    <p className="text-secondary text-sm">Approved and sent emails will appear here.</p>
                   </div>
                 ) : (
                   <div className="space-y-3">
@@ -4243,32 +4257,60 @@
                       <div key={o.id} className="glass p-4">
                         <div className="flex items-start justify-between mb-2">
                           <div>
-                            <p className="font-medium text-sm">{o.prospects?.property_address || 'Unknown'}</p>
+                            <p className="font-medium text-sm">{o.prospects?.property_address || 'Unknown'}, {o.prospects?.property_city}</p>
+                            <p className="text-secondary text-xs">To: {o.prospects?.owner_name} &middot; {o.prospects?.owner_email || ''}</p>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <span className="badge" style={{background: o.status==='opened'?'#EEF2FF':'#FFF5F0', color: o.status==='opened'?'#4f46e5':'#7A5A5A'}}>{o.status}</span>
+                            {o.sent_at && <span className="text-xs text-secondary">{formatDate(o.sent_at)}</span>}
+                          </div>
+                        </div>
+                        <div className="bg-[#FFF5F0] rounded-lg p-3">
+                          <p className="text-xs font-medium mb-1">{o.subject}</p>
+                          <p className="text-xs text-secondary whitespace-pre-wrap mt-1">{(o.body || '').substring(0, 200)}{o.body?.length > 200 ? '...' : ''}</p>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* REPLIED VIEW — prospects who responded */}
+            {view === 'replied' && (
+              <div>
+                {outreach.length === 0 ? (
+                  <div className="glass p-12 text-center">
+                    <p className="text-secondary mb-2">No replies yet</p>
+                    <p className="text-secondary text-sm">When prospects reply to your outreach, conversations will show here.</p>
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    {outreach.map(o => (
+                      <div key={o.id} className="glass p-4">
+                        <div className="flex items-start justify-between mb-2">
+                          <div>
+                            <p className="font-medium text-sm">{o.prospects?.property_address || 'Unknown'}, {o.prospects?.property_city}</p>
                             <p className="text-secondary text-xs">{o.prospects?.owner_name} &middot; {o.prospects?.owner_email || ''}</p>
                           </div>
                           <div className="flex items-center gap-2">
-                            <span className="badge" style={{
-                              background: o.status==='replied'?'#E8F9EE':o.status==='opened'?'#EEF2FF':'#FFF5F0',
-                              color: o.status==='replied'?'#22c55e':o.status==='opened'?'#4f46e5':'#7A5A5A'
-                            }}>{o.status}</span>
-                            {o.sent_at && <span className="text-xs text-secondary">Sent {formatDate(o.sent_at)}</span>}
+                            {o.reply_sentiment && <span className="badge" style={{background: o.reply_sentiment==='positive'?'#E8F9EE':o.reply_sentiment==='negative'?'#FFE5E8':'#F5F5F5', color: o.reply_sentiment==='positive'?'#22c55e':o.reply_sentiment==='negative'?'#B72552':'#7A5A5A'}}>{o.reply_sentiment}</span>}
+                            {o.replied_at && <span className="text-xs text-secondary">{formatDate(o.replied_at)}</span>}
                           </div>
                         </div>
                         <div className="bg-[#FFF5F0] rounded-lg p-3 mb-2">
-                          <p className="text-xs font-medium mb-1">{o.subject}</p>
-                          <p className="text-xs text-secondary whitespace-pre-wrap">{(o.body || '').substring(0, 200)}{o.body?.length > 200 ? '...' : ''}</p>
+                          <p className="text-xs font-medium mb-1">Your email: {o.subject}</p>
+                          <p className="text-xs text-secondary whitespace-pre-wrap mt-1">{(o.body || '').substring(0, 150)}{o.body?.length > 150 ? '...' : ''}</p>
                         </div>
                         {o.reply_body && (
                           <div className="bg-[#E8F9EE] rounded-lg p-3 mb-2">
-                            <p className="text-xs font-medium mb-1">Reply {o.reply_sentiment && <span className="badge" style={{fontSize:9, padding:'1px 6px'}}>{o.reply_sentiment}</span>}</p>
+                            <p className="text-xs font-medium mb-1">Their reply:</p>
                             <p className="text-xs whitespace-pre-wrap">{o.reply_body}</p>
                           </div>
                         )}
-                        {o.status === 'replied' && (
-                          <div className="flex gap-2 mt-2">
-                            <button onClick={() => { const pr = prospects.find(p => p.id === o.prospect_id); if (pr) convertToLead(pr); }} className="btn-primary text-xs">Convert to Lead</button>
-                          </div>
-                        )}
+                        <div className="flex gap-2 mt-2">
+                          <button onClick={() => { const pr = prospects.find(p => p.id === o.prospect_id); if (pr) convertToLead(pr); }} className="btn-primary text-xs">Convert to Lead</button>
+                        </div>
                       </div>
                     ))}
                   </div>
