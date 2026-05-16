@@ -4703,6 +4703,7 @@
       const PAGE_SIZE = 100;
       const [totalFiltered, setTotalFiltered] = useState(0);
       const [showFilters, setShowFilters] = useState(false);
+      const [selectedComp, setSelectedComp] = useState(null);
 
       const COMP_FIELD_MAP = {
         'address': ['Address', 'Property Address', 'Site Address', 'Street Address', 'Prop Address'],
@@ -4981,7 +4982,7 @@
                 </thead>
                 <tbody>
                   {comps.map(c => (
-                    <tr key={c.id} className="border-b border-[#F0D5CC]/30 hover:bg-[#FFF5F0] transition">
+                    <tr key={c.id} className="border-b border-[#F0D5CC]/30 hover:bg-[#FFF5F0] transition cursor-pointer" onClick={() => setSelectedComp(c)}>
                       <td className="py-2 px-2 font-medium">{c.address}</td>
                       <td className="py-2 px-2">{c.city}</td>
                       <td className="py-2 px-2">{c.zip || '—'}</td>
@@ -5011,6 +5012,139 @@
               )}
             </div>
           )}
+
+          {/* Property Detail Slide Panel */}
+          <div className={`slide-panel ${selectedComp ? 'active' : ''}`} style={{width:'500px'}}>
+            {selectedComp && (() => {
+              const c = selectedComp;
+              const r = c.raw_import || {};
+              const fmtD = (v) => v ? new Date(v).toLocaleDateString() : '—';
+              const sections = [
+                { title: 'Sale Details', fields: [
+                  ['Sale Price', fmt(c.sale_price)],
+                  ['List Price', fmt(c.list_price)],
+                  ['Original List', r['Original List Price'] ? fmt(parseFloat(r['Original List Price'])) : '—'],
+                  ['Close Date', fmtD(c.sale_date)],
+                  ['List Date', fmtD(r['Listing Date'])],
+                  ['DOM', c.days_on_market ?? '—'],
+                  ['Cumulative DOM', r['Cumulative DOM'] || '—'],
+                  ['Buyer Financing', r['Buyer Financing'] || '—'],
+                  ['Concessions', r['Concessions Amount'] || r['Concessions'] || '—'],
+                ]},
+                { title: 'Property Details', fields: [
+                  ['Type', r['Property Sub Type'] || c.property_type || '—'],
+                  ['Beds', c.beds || '—'],
+                  ['Full Baths', r['Bathrooms Full'] || '—'],
+                  ['Half Baths', r['Bathrooms Half'] || '—'],
+                  ['3/4 Baths', r['Bathrooms Three Quarter'] || '—'],
+                  ['Total Baths', c.baths || '—'],
+                  ['Living Area', c.sqft ? c.sqft.toLocaleString() + ' sqft' : '—'],
+                  ['Above Grade', r['Above Grade Finished Area'] ? Number(r['Above Grade Finished Area']).toLocaleString() + ' sqft' : '—'],
+                  ['Below Grade Finished', r['Below Grade Finished Area'] ? Number(r['Below Grade Finished Area']).toLocaleString() + ' sqft' : '—'],
+                  ['Rooms Total', r['Rooms Total'] || '—'],
+                  ['Year Built', c.year_built || '—'],
+                  ['$/SqFt', c.price_per_sqft ? '$' + Number(c.price_per_sqft).toFixed(0) : '—'],
+                ]},
+                { title: 'Lot & Exterior', fields: [
+                  ['Lot SqFt', c.lot_size_sqft ? c.lot_size_sqft.toLocaleString() : '—'],
+                  ['Lot Acres', r['Lot Size Acres'] || '—'],
+                  ['Garage', r['Garage YN'] === 'Y' ? (r['Garage Spaces'] || 'Yes') + ' spaces' : 'No'],
+                  ['Basement', r['Basement YN'] === 'Y' ? 'Yes' : 'No'],
+                  ['Fireplace', r['Fireplace YN'] === 'Y' ? 'Yes' : 'No'],
+                  ['New Construction', r['New Construction YN'] === 'Y' ? 'Yes' : 'No'],
+                  ['Waterfront', r['Waterfront YN'] === 'Y' ? 'Yes' : 'No'],
+                  ['Attached', r['Property Attached YN'] === 'Y' ? 'Yes' : 'No'],
+                ]},
+                { title: 'Location & Tax', fields: [
+                  ['City', c.city],
+                  ['State', c.state],
+                  ['Zip', c.zip || '—'],
+                  ['County', r['County'] || '—'],
+                  ['Subdivision', r['Subdivision Name'] || '—'],
+                  ['School District', r['School District'] || '—'],
+                  ['Elementary', r['Elementary School'] || '—'],
+                  ['High School', r['High School'] || '—'],
+                  ['Parcel', r['Parcel Number'] || '—'],
+                  ['Tax Annual', r['Tax Annual Amount'] ? '$' + Number(r['Tax Annual Amount']).toLocaleString() : '—'],
+                  ['Tax Assessed', r['Tax Assessed Value'] ? '$' + Number(r['Tax Assessed Value']).toLocaleString() : '—'],
+                  ['Township', r['Township'] || '—'],
+                ]},
+                { title: 'Listing Info', fields: [
+                  ['MLS #', r['Listing Number'] || '—'],
+                  ['Listing Agent', r['Listing Member'] || '—'],
+                  ['Listing Office', r['Listing Office'] || '—'],
+                  ['Selling Agent', r['Selling Member'] || '—'],
+                  ['Selling Office', r['Selling Office'] || '—'],
+                  ['Occupant Type', r['Occupant Type'] || '—'],
+                  ['Association', r['Association YN'] === 'Y' ? (r['Association Name'] || 'Yes') : 'No'],
+                  ['HOA Fee', r['Association Fee'] ? '$' + r['Association Fee'] + ' ' + (r['Association Fee Frequency'] || '') : '—'],
+                ]},
+              ];
+
+              return (
+                <div className="p-6 overflow-y-auto" style={{height:'100vh'}}>
+                  <div className="flex items-start justify-between mb-4">
+                    <div>
+                      <h3 className="font-semibold text-base">{c.address}</h3>
+                      <p className="text-secondary text-sm">{c.city}, {c.state} {c.zip}</p>
+                    </div>
+                    <button onClick={() => setSelectedComp(null)}><IconClose /></button>
+                  </div>
+
+                  {/* Hero stats */}
+                  <div className="grid grid-cols-3 gap-3 mb-5">
+                    <div className="glass p-3 text-center">
+                      <p className="text-xs text-secondary">Sale Price</p>
+                      <p className="font-semibold text-base" style={{color:'#7F1330'}}>{fmt(c.sale_price)}</p>
+                    </div>
+                    <div className="glass p-3 text-center">
+                      <p className="text-xs text-secondary">$/SqFt</p>
+                      <p className="font-semibold text-base">{c.price_per_sqft ? '$' + Number(c.price_per_sqft).toFixed(0) : '—'}</p>
+                    </div>
+                    <div className="glass p-3 text-center">
+                      <p className="text-xs text-secondary">DOM</p>
+                      <p className="font-semibold text-base">{c.days_on_market ?? '—'}</p>
+                    </div>
+                  </div>
+
+                  <div className="flex flex-wrap gap-2 mb-4 text-xs">
+                    {c.beds && <span className="badge" style={{background:'#FFF5F0', color:'#7F1330'}}>{c.beds} Beds</span>}
+                    {c.baths && <span className="badge" style={{background:'#FFF5F0', color:'#7F1330'}}>{c.baths} Baths</span>}
+                    {c.sqft && <span className="badge" style={{background:'#FFF5F0', color:'#7F1330'}}>{c.sqft.toLocaleString()} SqFt</span>}
+                    {c.year_built && <span className="badge" style={{background:'#FFF5F0', color:'#7F1330'}}>Built {c.year_built}</span>}
+                    {c.lot_size_sqft && <span className="badge" style={{background:'#EEF2FF', color:'#4f46e5'}}>{c.lot_size_sqft.toLocaleString()} lot sqft</span>}
+                  </div>
+
+                  {/* Remarks */}
+                  {r['Public Remarks'] && (
+                    <div className="glass p-3 mb-4">
+                      <p className="text-xs font-medium mb-1">Public Remarks</p>
+                      <p className="text-xs text-secondary" style={{lineHeight:'1.5'}}>{r['Public Remarks']}</p>
+                    </div>
+                  )}
+
+                  {/* Sections */}
+                  {sections.map(s => {
+                    const filled = s.fields.filter(f => f[1] && f[1] !== '—' && f[1] !== 'No');
+                    if (filled.length === 0) return null;
+                    return (
+                      <div key={s.title} className="mb-4">
+                        <h4 className="text-xs font-semibold uppercase tracking-wider mb-2" style={{color:'#7F1330'}}>{s.title}</h4>
+                        <div className="grid grid-cols-2 gap-x-4 gap-y-1.5">
+                          {s.fields.map(([label, val]) => val && val !== '—' ? (
+                            <div key={label} className="flex justify-between text-xs py-0.5 border-b border-[#F0D5CC]/30">
+                              <span className="text-secondary">{label}</span>
+                              <span className="font-medium">{val}</span>
+                            </div>
+                          ) : null)}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              );
+            })()}
+          </div>
         </div>
       );
     }
