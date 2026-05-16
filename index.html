@@ -1441,41 +1441,47 @@
       const [selectedTransaction, setSelectedTransaction] = useState(null);
       const [tasks, setTasks] = useState([]);
       const [showAddForm, setShowAddForm] = useState(false);
+      const [contacts, setContacts] = useState([]);
+      const [contactSearch, setContactSearch] = useState('');
+      const [showNewContact, setShowNewContact] = useState(false);
       const [formData, setFormData] = useState({
-        contact_id: '', property_id: '', transaction_type: 'buyer',
-        status: 'active', contract_price: '', list_price: '',
-        commission_rate: 0.025, contract_date: '', closing_date: ''
+        contact_id: '', transaction_type: 'listing', status: 'pre_listing',
+        address: '', city: '', state: 'IN', zip: '',
+        list_price: '', contract_price: '', commission_rate: '2.5',
+        contract_date: '', closing_date: '',
+        title_company: '', lender_name: '', co_agent_name: '', co_agent_brokerage: '', co_agent_phone: '', co_agent_email: '', notes: ''
       });
+      const [newContact, setNewContact] = useState({ first_name: '', last_name: '', email: '', phone: '' });
+      const STATUSES = [
+        { id: 'pre_listing', label: 'Pre-Listing', color: '#E8F0F2', text: '#003744' },
+        { id: 'active', label: 'Active', color: '#EEF2FF', text: '#4f46e5' },
+        { id: 'under_contract', label: 'Under Contract', color: '#FFEEE3', text: '#FE8982' },
+        { id: 'pending', label: 'Pending', color: '#FFF0EC', text: '#7F1330' },
+        { id: 'closed', label: 'Closed', color: '#E8F9EE', text: '#22c55e' },
+        { id: 'cancelled', label: 'Cancelled', color: '#F5F5F5', text: '#999' },
+      ];
 
       useEffect(() => {
         fetchTransactions();
-        const handleRefresh = () => fetchTransactions();
+        fetchContacts();
+        const handleRefresh = () => { fetchTransactions(); };
         window.addEventListener('crm-data-changed', handleRefresh);
         return () => window.removeEventListener('crm-data-changed', handleRefresh);
       }, []);
 
       const fetchTransactions = async () => {
-        try {
-          const { data, error } = await supabase.from('transactions').select('*, contacts(*), properties(*)');
-          if (error) throw error;
-          if (data) setTransactions(data);
-        } catch (err) {
-          console.error('Error fetching transactions:', err);
-        }
+        const { data } = await supabase.from('transactions').select('*, contacts(*), properties(*)').order('created_at', { ascending: false });
+        setTransactions(data || []);
+      };
+
+      const fetchContacts = async () => {
+        const { data } = await supabase.from('contacts').select('id, first_name, last_name, email, phone').order('last_name');
+        setContacts(data || []);
       };
 
       const fetchTransactionTasks = async (transactionId) => {
-        try {
-          const { data, error } = await supabase
-            .from('transaction_tasks')
-            .select('*')
-            .eq('transaction_id', transactionId)
-            .order('display_order');
-          if (error) throw error;
-          if (data) setTasks(data);
-        } catch (err) {
-          console.error('Error fetching tasks:', err);
-        }
+        const { data } = await supabase.from('transaction_tasks').select('*').eq('transaction_id', transactionId).order('display_order');
+        setTasks(data || []);
       };
 
       const handleSelectTransaction = (transaction) => {
@@ -1484,71 +1490,96 @@
       };
 
       const handleToggleTask = async (taskId, isCompleted) => {
-        try {
-          const { error } = await supabase
-            .from('transaction_tasks')
-            .update({ is_completed: !isCompleted, completed_at: !isCompleted ? new Date().toISOString() : null })
-            .eq('id', taskId);
-          if (error) throw error;
-          fetchTransactionTasks(selectedTransaction.id);
-        } catch (err) {
-          console.error('Error updating task:', err);
-        }
+        await supabase.from('transaction_tasks').update({ is_completed: !isCompleted, completed_at: !isCompleted ? new Date().toISOString() : null }).eq('id', taskId);
+        fetchTransactionTasks(selectedTransaction.id);
       };
 
       const generateMilestones = async (transactionId, closingDate) => {
         if (!closingDate) return;
-        try {
-          const { data: templates } = await supabase.from('milestone_templates').select('*').order('sort_order');
-          if (!templates || templates.length === 0) return;
-          const closing = new Date(closingDate);
-          const milestones = templates.map(t => {
-            const due = new Date(closing);
-            due.setDate(due.getDate() - t.days_before_close);
-            return { title: t.title, description: `${t.description} [Transaction: ${transactionId}]`, priority: t.priority, due_date: due.toISOString().split('T')[0], status: 'pending' };
-          });
-          await supabase.from('tasks').insert(milestones);
-          window.dispatchEvent(new CustomEvent('crm-data-changed'));
-        } catch (err) { console.error('Error generating milestones:', err); }
+        const { data: templates } = await supabase.from('milestone_templates').select('*').order('sort_order');
+        if (!templates?.length) return;
+        const closing = new Date(closingDate);
+        const milestones = templates.map(t => {
+          const due = new Date(closing); due.setDate(due.getDate() - t.days_before_close);
+          return { title: t.title, description: t.description, priority: t.priority, due_date: due.toISOString().split('T')[0], status: 'pending', transaction_id: transactionId };
+        });
+        await supabase.from('transaction_tasks').insert(milestones);
+        window.dispatchEvent(new CustomEvent('crm-data-changed'));
+      };
+
+      const createNewContactForTransaction = async () => {
+        if (!newContact.first_name || !newContact.last_name) { alert('First and last name required'); return; }
+        const { data, error } = await supabase.from('contacts').insert([{ ...newContact, contact_type: 'client' }]).select().single();
+        if (error) { alert('Error creating contact: ' + error.message); return; }
+        setFormData({ ...formData, contact_id: data.id });
+        setContacts([...contacts, data]);
+        setShowNewContact(false);
+        setNewContact({ first_name: '', last_name: '', email: '', phone: '' });
       };
 
       const handleAddTransaction = async (e) => {
         e.preventDefault();
-        try {
-          const { data, error } = await supabase.from('transactions').insert([{
-            contact_id: formData.contact_id,
-            property_id: formData.property_id,
-            transaction_type: formData.transaction_type,
-            status: formData.status,
-            contract_price: formData.contract_price ? parseInt(formData.contract_price) : null,
-            list_price: formData.list_price ? parseInt(formData.list_price) : null,
-            commission_rate: parseFloat(formData.commission_rate),
-            contract_date: formData.contract_date || null,
-            closing_date: formData.closing_date || null
-          }]).select();
-          if (error) throw error;
-          // Auto-generate milestones if under contract with closing date
-          if (data && data[0] && (formData.status === 'under_contract' || formData.status === 'pending') && formData.closing_date) {
-            await generateMilestones(data[0].id, formData.closing_date);
-          }
-          setShowAddForm(false);
-          setFormData({
-            contact_id: '', property_id: '', transaction_type: 'buyer',
-            status: 'active', contract_price: '', list_price: '',
-            commission_rate: 0.025, contract_date: '', closing_date: ''
-          });
-          fetchTransactions();
-        } catch (err) {
-          console.error('Error adding transaction:', err);
-          alert('Error adding transaction');
+        if (!formData.contact_id) { alert('Please select or create a client'); return; }
+        if (!formData.address) { alert('Please enter a property address'); return; }
+        // Create property record
+        const { data: prop } = await supabase.from('properties').insert([{
+          address_street: formData.address, address_city: formData.city, address_state: formData.state, address_zip: formData.zip,
+          list_price: formData.list_price ? parseFloat(formData.list_price) : null, status: formData.status === 'closed' ? 'sold' : 'active'
+        }]).select().single();
+        if (!prop) { alert('Error creating property'); return; }
+        // Create transaction
+        const { data, error } = await supabase.from('transactions').insert([{
+          contact_id: formData.contact_id, property_id: prop.id,
+          transaction_type: formData.transaction_type, status: formData.status,
+          list_price: formData.list_price ? parseFloat(formData.list_price) : null,
+          contract_price: formData.contract_price ? parseFloat(formData.contract_price) : null,
+          commission_rate: formData.commission_rate ? parseFloat(formData.commission_rate) / 100 : 0.025,
+          contract_date: formData.contract_date || null, closing_date: formData.closing_date || null,
+          title_company: formData.title_company || null, lender_name: formData.lender_name || null,
+          co_agent_name: formData.co_agent_name || null, co_agent_brokerage: formData.co_agent_brokerage || null,
+          co_agent_phone: formData.co_agent_phone || null, co_agent_email: formData.co_agent_email || null,
+          notes: formData.notes || null,
+        }]).select();
+        if (error) { alert('Error: ' + error.message); return; }
+        if (data?.[0] && formData.closing_date && ['under_contract','pending','closed'].includes(formData.status)) {
+          await generateMilestones(data[0].id, formData.closing_date);
+        }
+        setShowAddForm(false);
+        setFormData({ contact_id: '', transaction_type: 'listing', status: 'pre_listing', address: '', city: '', state: 'IN', zip: '', list_price: '', contract_price: '', commission_rate: '2.5', contract_date: '', closing_date: '', title_company: '', lender_name: '', co_agent_name: '', co_agent_brokerage: '', co_agent_phone: '', co_agent_email: '', notes: '' });
+        fetchTransactions();
+      };
+
+      const updateTransactionStatus = async (transId, newStatus) => {
+        await supabase.from('transactions').update({ status: newStatus }).eq('id', transId);
+        const updated = { ...selectedTransaction, status: newStatus };
+        setSelectedTransaction(updated);
+        fetchTransactions();
+        // Generate milestones if moving to under_contract and has closing date
+        if (newStatus === 'under_contract' && selectedTransaction.closing_date) {
+          await generateMilestones(transId, selectedTransaction.closing_date);
+          fetchTransactionTasks(transId);
         }
       };
 
-      const getHealthColor = (status) => {
-        if (status === 'closed') return 'high';
-        if (status === 'under_contract' || status === 'pending') return 'medium';
-        return 'low';
+      const updateTransactionField = async (field, value) => {
+        await supabase.from('transactions').update({ [field]: value || null }).eq('id', selectedTransaction.id);
+        setSelectedTransaction({ ...selectedTransaction, [field]: value });
+        fetchTransactions();
       };
+
+      const getStatusStyle = (status) => {
+        const s = STATUSES.find(st => st.id === status) || STATUSES[0];
+        return { background: s.color, color: s.text };
+      };
+
+      const filteredContacts = contacts.filter(c => {
+        if (!contactSearch) return true;
+        const q = contactSearch.toLowerCase();
+        return (c.first_name + ' ' + c.last_name).toLowerCase().includes(q) || (c.email || '').toLowerCase().includes(q);
+      });
+
+      const fmt = (v) => v ? '$' + Number(v).toLocaleString() : '—';
+      const selectedContactName = contacts.find(c => c.id === formData.contact_id);
 
       return (
         <div className="flex-1 flex flex-col p-3 sm:p-6 overflow-hidden min-h-0">
@@ -1557,142 +1588,241 @@
             <button onClick={() => setShowAddForm(true)} className="btn-primary">+ Add Transaction</button>
           </div>
 
+          {/* ADD TRANSACTION MODAL */}
           {showAddForm && (
-            <div className="fixed inset-0 bg-black/20 z-[999] flex items-center justify-center">
-              <div className="bg-white rounded-2xl p-8 max-w-lg w-full mx-4 max-h-[85vh] overflow-y-auto border border-[#F0D5CC] shadow-lg">
-                <h3 className="text-lg font-semibold mb-6">Add Transaction</h3>
+            <div className="fixed inset-0 bg-black/20 z-[999] flex items-center justify-center" onClick={() => setShowAddForm(false)}>
+              <div className="bg-white rounded-2xl p-6 max-w-2xl w-full mx-4 max-h-[90vh] overflow-y-auto border border-[#F0D5CC] shadow-lg" onClick={e => e.stopPropagation()}>
+                <h3 className="text-lg font-semibold mb-5">New Transaction</h3>
                 <form onSubmit={handleAddTransaction} className="space-y-4">
+
+                  {/* Client selection */}
                   <div>
-                    <label className="text-sm text-secondary mb-2 block">Transaction Type</label>
-                    <select
-                      value={formData.transaction_type}
-                      onChange={(e) => setFormData({...formData, transaction_type: e.target.value})}
-                      className="input-glass w-full"
-                    >
-                      <option value="buyer">Buyer</option>
-                      <option value="listing">Listing</option>
-                      <option value="dual">Dual</option>
-                    </select>
+                    <label className="text-sm text-secondary mb-2 block">Client</label>
+                    {!formData.contact_id ? (
+                      <div>
+                        <input className="input-glass w-full mb-2" placeholder="Search contacts by name..." value={contactSearch} onChange={e => setContactSearch(e.target.value)} />
+                        <div className="max-h-32 overflow-y-auto border border-[#F0D5CC] rounded-lg">
+                          {filteredContacts.slice(0, 8).map(c => (
+                            <div key={c.id} onClick={() => { setFormData({...formData, contact_id: c.id}); setContactSearch(''); }} className="px-3 py-2 hover:bg-[#FFF5F0] cursor-pointer text-sm border-b border-[#F0D5CC]/30">
+                              <span className="font-medium">{c.first_name} {c.last_name}</span>
+                              {c.email && <span className="text-secondary ml-2">{c.email}</span>}
+                            </div>
+                          ))}
+                        </div>
+                        <button type="button" onClick={() => setShowNewContact(true)} className="text-xs mt-2" style={{color:'#7F1330'}}>+ Create New Client</button>
+                        {showNewContact && (
+                          <div className="glass p-3 mt-2 space-y-2">
+                            <div className="grid grid-cols-2 gap-2">
+                              <input className="input-glass" placeholder="First name" value={newContact.first_name} onChange={e => setNewContact({...newContact, first_name: e.target.value})} />
+                              <input className="input-glass" placeholder="Last name" value={newContact.last_name} onChange={e => setNewContact({...newContact, last_name: e.target.value})} />
+                            </div>
+                            <div className="grid grid-cols-2 gap-2">
+                              <input className="input-glass" placeholder="Email" value={newContact.email} onChange={e => setNewContact({...newContact, email: e.target.value})} />
+                              <input className="input-glass" placeholder="Phone" value={newContact.phone} onChange={e => setNewContact({...newContact, phone: e.target.value})} />
+                            </div>
+                            <div className="flex gap-2">
+                              <button type="button" onClick={createNewContactForTransaction} className="btn-primary text-xs">Create Client</button>
+                              <button type="button" onClick={() => setShowNewContact(false)} className="btn-secondary text-xs">Cancel</button>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    ) : (
+                      <div className="flex items-center gap-2">
+                        <span className="input-glass flex-1 py-2">{selectedContactName ? selectedContactName.first_name + ' ' + selectedContactName.last_name : 'Selected'}</span>
+                        <button type="button" onClick={() => setFormData({...formData, contact_id: ''})} className="btn-secondary text-xs">Change</button>
+                      </div>
+                    )}
                   </div>
-                  <div>
-                    <label className="text-sm text-secondary mb-2 block">Status</label>
-                    <select
-                      value={formData.status}
-                      onChange={(e) => setFormData({...formData, status: e.target.value})}
-                      className="input-glass w-full"
-                    >
-                      <option value="pre_listing">Pre-listing</option>
-                      <option value="active">Active</option>
-                      <option value="under_contract">Under Contract</option>
-                      <option value="pending">Pending</option>
-                      <option value="closed">Closed</option>
-                    </select>
-                  </div>
+
+                  {/* Transaction type */}
                   <div className="grid grid-cols-2 gap-3">
                     <div>
-                      <label className="text-sm text-secondary mb-2 block">List Price</label>
-                      <input
-                        type="number"
-                        value={formData.list_price}
-                        onChange={(e) => setFormData({...formData, list_price: e.target.value})}
-                        className="input-glass w-full"
-                        placeholder="e.g. 300000"
-                      />
+                      <label className="text-sm text-secondary mb-2 block">Type</label>
+                      <select value={formData.transaction_type} onChange={e => setFormData({...formData, transaction_type: e.target.value})} className="input-glass w-full">
+                        <option value="listing">Listing</option>
+                        <option value="buyer">Buyer</option>
+                        <option value="dual">Dual</option>
+                        <option value="referral">Referral</option>
+                        <option value="lease">Lease</option>
+                      </select>
                     </div>
                     <div>
-                      <label className="text-sm text-secondary mb-2 block">Contract Price</label>
-                      <input
-                        type="number"
-                        value={formData.contract_price}
-                        onChange={(e) => setFormData({...formData, contract_price: e.target.value})}
-                        className="input-glass w-full"
-                        placeholder="e.g. 295000"
-                      />
+                      <label className="text-sm text-secondary mb-2 block">Status</label>
+                      <select value={formData.status} onChange={e => setFormData({...formData, status: e.target.value})} className="input-glass w-full">
+                        {STATUSES.map(s => <option key={s.id} value={s.id}>{s.label}</option>)}
+                      </select>
                     </div>
                   </div>
-                  <div className="flex gap-3 pt-4">
+
+                  {/* Property address */}
+                  <div>
+                    <label className="text-sm text-secondary mb-2 block">Property Address</label>
+                    <input className="input-glass w-full" placeholder="123 Main St" value={formData.address} onChange={e => setFormData({...formData, address: e.target.value})} required />
+                  </div>
+                  <div className="grid grid-cols-3 gap-3">
+                    <input className="input-glass" placeholder="City" value={formData.city} onChange={e => setFormData({...formData, city: e.target.value})} />
+                    <input className="input-glass" placeholder="State" value={formData.state} onChange={e => setFormData({...formData, state: e.target.value})} />
+                    <input className="input-glass" placeholder="Zip" value={formData.zip} onChange={e => setFormData({...formData, zip: e.target.value})} />
+                  </div>
+
+                  {/* Pricing */}
+                  <div className="grid grid-cols-3 gap-3">
+                    <div><label className="text-sm text-secondary mb-1 block">List Price</label><input type="number" className="input-glass w-full" placeholder="300000" value={formData.list_price} onChange={e => setFormData({...formData, list_price: e.target.value})} /></div>
+                    <div><label className="text-sm text-secondary mb-1 block">Contract Price</label><input type="number" className="input-glass w-full" placeholder="295000" value={formData.contract_price} onChange={e => setFormData({...formData, contract_price: e.target.value})} /></div>
+                    <div><label className="text-sm text-secondary mb-1 block">Commission %</label><input type="number" step="0.1" className="input-glass w-full" placeholder="2.5" value={formData.commission_rate} onChange={e => setFormData({...formData, commission_rate: e.target.value})} /></div>
+                  </div>
+
+                  {/* Dates */}
+                  <div className="grid grid-cols-2 gap-3">
+                    <div><label className="text-sm text-secondary mb-1 block">Contract Date</label><input type="date" className="input-glass w-full" value={formData.contract_date} onChange={e => setFormData({...formData, contract_date: e.target.value})} /></div>
+                    <div><label className="text-sm text-secondary mb-1 block">Closing Date</label><input type="date" className="input-glass w-full" value={formData.closing_date} onChange={e => setFormData({...formData, closing_date: e.target.value})} /></div>
+                  </div>
+
+                  {/* Other parties */}
+                  <div className="grid grid-cols-2 gap-3">
+                    <div><label className="text-sm text-secondary mb-1 block">Title Company</label><input className="input-glass w-full" value={formData.title_company} onChange={e => setFormData({...formData, title_company: e.target.value})} /></div>
+                    <div><label className="text-sm text-secondary mb-1 block">Lender</label><input className="input-glass w-full" value={formData.lender_name} onChange={e => setFormData({...formData, lender_name: e.target.value})} /></div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div><label className="text-sm text-secondary mb-1 block">Co-Agent Name</label><input className="input-glass w-full" value={formData.co_agent_name} onChange={e => setFormData({...formData, co_agent_name: e.target.value})} /></div>
+                    <div><label className="text-sm text-secondary mb-1 block">Co-Agent Brokerage</label><input className="input-glass w-full" value={formData.co_agent_brokerage} onChange={e => setFormData({...formData, co_agent_brokerage: e.target.value})} /></div>
+                  </div>
+
+                  <div><label className="text-sm text-secondary mb-1 block">Notes</label><textarea className="input-glass w-full" rows="2" value={formData.notes} onChange={e => setFormData({...formData, notes: e.target.value})} /></div>
+
+                  <div className="flex gap-3 pt-2">
                     <button type="button" onClick={() => setShowAddForm(false)} className="btn-secondary flex-1">Cancel</button>
-                    <button type="submit" className="btn-primary flex-1">Add</button>
+                    <button type="submit" className="btn-primary flex-1">Create Transaction</button>
                   </div>
                 </form>
               </div>
             </div>
           )}
 
+          {/* TRANSACTION LIST */}
           <div className="flex-1 overflow-y-auto">
-            <div className="grid grid-cols-1 gap-4">
-              {transactions.map(trans => (
-                <div
-                  key={trans.id}
-                  onClick={() => handleSelectTransaction(trans)}
-                  className="glass-hover p-4 cursor-pointer"
-                >
-                  <div className="flex justify-between items-start mb-2">
-                    <div>
-                      <p className="font-semibold text-sm">{trans.properties?.address_street || 'Address TBD'}</p>
-                      <p className="text-secondary text-xs">{trans.contacts?.first_name} {trans.contacts?.last_name}</p>
+            {transactions.length === 0 ? (
+              <div className="glass p-12 text-center"><p className="text-secondary">No transactions yet</p></div>
+            ) : (
+              <div className="grid grid-cols-1 gap-3">
+                {transactions.map(trans => (
+                  <div key={trans.id} onClick={() => handleSelectTransaction(trans)} className="glass-hover p-4 cursor-pointer">
+                    <div className="flex justify-between items-start mb-2">
+                      <div>
+                        <p className="font-semibold text-sm">{trans.properties?.address_street || 'Address TBD'}{trans.properties?.address_city ? ', ' + trans.properties.address_city : ''}</p>
+                        <p className="text-secondary text-xs">{trans.contacts?.first_name} {trans.contacts?.last_name} &middot; {trans.transaction_type}</p>
+                      </div>
+                      <span className="badge" style={getStatusStyle(trans.status)}>{STATUSES.find(s => s.id === trans.status)?.label || trans.status}</span>
                     </div>
-                    <span className="badge" style={{
-                      backgroundColor: trans.status === 'closed' ? '#E0F0F2' : trans.status === 'under_contract' ? '#FFEEE3' : '#FFF5F0',
-                      color: trans.status === 'closed' ? '#003744' : trans.status === 'under_contract' ? '#FE8982' : '#7A5A5A'
-                    }}>
-                      {trans.status}
-                    </span>
+                    <div className="flex justify-between text-xs">
+                      <span className="text-secondary">List: {fmt(trans.list_price)} {trans.contract_price ? ' → Contract: ' + fmt(trans.contract_price) : ''}</span>
+                      {trans.closing_date && <span className="text-secondary">Close: {new Date(trans.closing_date).toLocaleDateString()}</span>}
+                    </div>
                   </div>
-                  <div className="flex justify-between text-xs mb-2">
-                    <span className="text-secondary">${trans.list_price?.toLocaleString() || '0'} → ${trans.contract_price?.toLocaleString() || 'TBD'}</span>
-                  </div>
-                  <div className="health-bar">
-                    <div className={`health-fill ${getHealthColor(trans.status)}`} style={{width: '65%'}}></div>
-                  </div>
-                </div>
-              ))}
-            </div>
+                ))}
+              </div>
+            )}
           </div>
 
+          {/* TRANSACTION DETAIL PANEL */}
           {selectedTransaction && (
-            <div className="fixed inset-0 bg-black/20 z-[999] flex items-center justify-center">
-              <div className="bg-white rounded-2xl p-8 max-w-lg w-full mx-4 max-h-[85vh] overflow-y-auto border border-[#F0D5CC] shadow-lg">
-                <h3 className="text-lg font-semibold mb-4">{selectedTransaction.properties?.address_street}</h3>
-                <div className="space-y-4 mb-6">
-                  <div className="grid grid-cols-2 gap-4">
-                    <div>
-                      <p className="text-xs text-secondary">Client</p>
-                      <p className="font-semibold text-sm">{selectedTransaction.contacts?.first_name} {selectedTransaction.contacts?.last_name}</p>
-                    </div>
-                    <div>
-                      <p className="text-xs text-secondary">Status</p>
-                      <p className="font-semibold text-sm">{selectedTransaction.status}</p>
-                    </div>
+            <div className="fixed inset-0 bg-black/20 z-[999] flex items-center justify-center" onClick={() => setSelectedTransaction(null)}>
+              <div className="bg-white rounded-2xl p-6 max-w-2xl w-full mx-4 max-h-[90vh] overflow-y-auto border border-[#F0D5CC] shadow-lg" onClick={e => e.stopPropagation()}>
+                <div className="flex items-start justify-between mb-4">
+                  <div>
+                    <h3 className="text-lg font-semibold">{selectedTransaction.properties?.address_street || 'Address TBD'}</h3>
+                    <p className="text-secondary text-sm">{selectedTransaction.contacts?.first_name} {selectedTransaction.contacts?.last_name} &middot; {selectedTransaction.transaction_type}</p>
                   </div>
-                  <div className="grid grid-cols-2 gap-4">
-                    <div>
-                      <p className="text-xs text-secondary">List Price</p>
-                      <p className="font-semibold text-sm">${selectedTransaction.list_price?.toLocaleString()}</p>
-                    </div>
-                    <div>
-                      <p className="text-xs text-secondary">Contract Price</p>
-                      <p className="font-semibold text-sm">${selectedTransaction.contract_price?.toLocaleString()}</p>
-                    </div>
+                  <button onClick={() => setSelectedTransaction(null)}><IconClose /></button>
+                </div>
+
+                {/* Status pipeline */}
+                <div className="flex gap-1 mb-5 flex-wrap">
+                  {STATUSES.filter(s => s.id !== 'cancelled').map(s => (
+                    <button key={s.id} onClick={() => updateTransactionStatus(selectedTransaction.id, s.id)}
+                      className="px-3 py-1.5 rounded-lg text-xs font-medium transition-all"
+                      style={selectedTransaction.status === s.id ? { background: s.color, color: s.text, border: '2px solid ' + s.text } : { background: '#F5F5F5', color: '#999', border: '2px solid transparent' }}>
+                      {s.label}
+                    </button>
+                  ))}
+                </div>
+
+                {/* Pricing */}
+                <div className="grid grid-cols-3 gap-3 mb-4">
+                  <div className="glass p-3 text-center">
+                    <p className="text-xs text-secondary">List Price</p>
+                    <p className="font-semibold">{fmt(selectedTransaction.list_price)}</p>
+                  </div>
+                  <div className="glass p-3 text-center">
+                    <p className="text-xs text-secondary">Contract Price</p>
+                    <input type="number" className="input-glass w-full text-center font-semibold text-sm mt-1" value={selectedTransaction.contract_price || ''} onChange={e => updateTransactionField('contract_price', e.target.value)} placeholder="Enter price" />
+                  </div>
+                  <div className="glass p-3 text-center">
+                    <p className="text-xs text-secondary">Commission</p>
+                    <p className="font-semibold">{selectedTransaction.commission_rate ? (selectedTransaction.commission_rate * 100).toFixed(1) + '%' : '—'}</p>
+                    {selectedTransaction.contract_price && selectedTransaction.commission_rate && <p className="text-xs text-secondary">{fmt(selectedTransaction.contract_price * selectedTransaction.commission_rate)}</p>}
                   </div>
                 </div>
 
-                <h4 className="font-semibold text-sm mb-3">Checklist</h4>
-                <div className="space-y-2 mb-6 max-h-48 overflow-y-auto">
+                {/* Dates */}
+                <div className="grid grid-cols-2 gap-3 mb-4">
+                  <div>
+                    <label className="text-xs text-secondary mb-1 block">Contract Date</label>
+                    <input type="date" className="input-glass w-full text-sm" value={selectedTransaction.contract_date || ''} onChange={e => updateTransactionField('contract_date', e.target.value)} />
+                  </div>
+                  <div>
+                    <label className="text-xs text-secondary mb-1 block">Closing Date</label>
+                    <input type="date" className="input-glass w-full text-sm" value={selectedTransaction.closing_date || ''} onChange={e => updateTransactionField('closing_date', e.target.value)} />
+                  </div>
+                </div>
+
+                {/* Other parties */}
+                <div className="grid grid-cols-2 gap-3 mb-4">
+                  <div>
+                    <label className="text-xs text-secondary mb-1 block">Title Company</label>
+                    <input className="input-glass w-full text-sm" value={selectedTransaction.title_company || ''} onChange={e => updateTransactionField('title_company', e.target.value)} />
+                  </div>
+                  <div>
+                    <label className="text-xs text-secondary mb-1 block">Lender</label>
+                    <input className="input-glass w-full text-sm" value={selectedTransaction.lender_name || ''} onChange={e => updateTransactionField('lender_name', e.target.value)} />
+                  </div>
+                  <div>
+                    <label className="text-xs text-secondary mb-1 block">Co-Agent</label>
+                    <input className="input-glass w-full text-sm" value={selectedTransaction.co_agent_name || ''} onChange={e => updateTransactionField('co_agent_name', e.target.value)} />
+                  </div>
+                  <div>
+                    <label className="text-xs text-secondary mb-1 block">Co-Agent Brokerage</label>
+                    <input className="input-glass w-full text-sm" value={selectedTransaction.co_agent_brokerage || ''} onChange={e => updateTransactionField('co_agent_brokerage', e.target.value)} />
+                  </div>
+                </div>
+
+                {/* Notes */}
+                <div className="mb-4">
+                  <label className="text-xs text-secondary mb-1 block">Notes</label>
+                  <textarea className="input-glass w-full text-sm" rows="2" value={selectedTransaction.notes || ''} onBlur={e => updateTransactionField('notes', e.target.value)} onChange={e => setSelectedTransaction({...selectedTransaction, notes: e.target.value})} />
+                </div>
+
+                {/* Checklist */}
+                <h4 className="font-semibold text-sm mb-3">Transaction Checklist</h4>
+                <div className="space-y-1.5 mb-4 max-h-48 overflow-y-auto">
                   {tasks.length > 0 ? tasks.map(task => (
-                    <label key={task.id} className="flex items-center gap-2 cursor-pointer hover:bg-[#FFEEE3] p-2 rounded">
-                      <input
-                        type="checkbox"
-                        checked={task.is_completed}
-                        onChange={() => handleToggleTask(task.id, task.is_completed)}
-                        className="checkbox-glass"
-                      />
+                    <label key={task.id} className="flex items-center gap-2 cursor-pointer hover:bg-[#FFEEE3] p-2 rounded transition">
+                      <input type="checkbox" checked={task.is_completed} onChange={() => handleToggleTask(task.id, task.is_completed)} className="checkbox-glass" />
                       <span className={task.is_completed ? 'line-through text-secondary text-sm' : 'text-sm'}>{task.title}</span>
+                      {task.due_date && <span className="text-xs text-secondary ml-auto">{new Date(task.due_date).toLocaleDateString()}</span>}
                     </label>
-                  )) : <p className="text-secondary text-sm">No tasks</p>}
+                  )) : (
+                    <div className="text-center py-3">
+                      <p className="text-secondary text-sm mb-2">No checklist items</p>
+                      {selectedTransaction.closing_date && <button onClick={() => { generateMilestones(selectedTransaction.id, selectedTransaction.closing_date).then(() => fetchTransactionTasks(selectedTransaction.id)); }} className="btn-secondary text-xs">Generate Milestones</button>}
+                    </div>
+                  )}
                 </div>
 
-                <button onClick={() => setSelectedTransaction(null)} className="btn-secondary w-full">Close</button>
+                {selectedTransaction.status !== 'cancelled' && (
+                  <button onClick={() => updateTransactionStatus(selectedTransaction.id, 'cancelled')} className="text-xs text-secondary hover:text-[#B72552] transition mt-2">Cancel Transaction</button>
+                )}
               </div>
             </div>
           )}
