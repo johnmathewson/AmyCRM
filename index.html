@@ -2803,7 +2803,7 @@
       // Parse Google Calendar events into date-keyed map
       const gcalByDate = {};
       gcalEvents.forEach(e => {
-        const start = e.start?.dateTime || e.start?.date || '';
+        const start = typeof e.start === 'string' ? e.start : (e.start?.dateTime || e.start?.date || '');
         const dateKey = start.substring(0, 10);
         if (!gcalByDate[dateKey]) gcalByDate[dateKey] = [];
         gcalByDate[dateKey].push(e);
@@ -2815,7 +2815,7 @@
         const dayGcal = (gcalByDate[dateStr] || []).filter(g => {
           // Exclude CRM-synced events (they'll show as showings/tasks)
           const desc = g.description || '';
-          return !desc.includes('[AmyCRM Showing]') && !desc.includes('[AmyCRM Task]');
+          return !desc.includes('[AmyCRM') && !desc.includes('[AmyCRM Showing]') && !desc.includes('[AmyCRM Task]');
         });
         return { showings: dayShowings, tasks: dayTasks, gcal: dayGcal };
       };
