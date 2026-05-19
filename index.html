@@ -795,642 +795,122 @@
     }
 
     // PIPELINE (SMART LIST)
+    // PIPELINE — Dashboard view of contacts in active pipeline stages
     function Pipeline() {
-      const [leads, setLeads] = useState([]);
       const [stages, setStages] = useState([]);
-      const [selectedLead, setSelectedLead] = useState(null);
-      const [showAddForm, setShowAddForm] = useState(false);
-      const [formData, setFormData] = useState({
-        first_name: '', last_name: '', email: '', phone: '',
-        lead_type: 'buyer', temperature: 'hot', score: 50,
-        budget_min: '', budget_max: '', desired_area: '', stage_id: ''
-      });
-      const [editingLead, setEditingLead] = useState(null);
+      const [contacts, setContacts] = useState([]);
+      const [summary, setSummary] = useState({ grossVolume: 0, pipelineValue: 0, potentialComm: 0, totalActive: 0 });
+      const [expandedStage, setExpandedStage] = useState(null);
 
       useEffect(() => {
-        fetchPipelineData();
-        const handleRefresh = () => fetchPipelineData();
+        fetchPipeline();
+        const handleRefresh = () => fetchPipeline();
         window.addEventListener('crm-data-changed', handleRefresh);
         return () => window.removeEventListener('crm-data-changed', handleRefresh);
       }, []);
 
-      const fetchPipelineData = async () => {
-        try {
-          const [stagesRes, leadsRes] = await Promise.all([
-            supabase.from('pipeline_stages').select('*').order('display_order'),
-            supabase.from('leads').select('*, contacts(*), pipeline_stages(*)').eq('archived', false)
-          ]);
-          if (stagesRes.data) setStages(stagesRes.data);
-          if (leadsRes.data) setLeads(leadsRes.data);
-        } catch (err) {
-          console.error('Error fetching pipeline:', err);
-        }
+      const fetchPipeline = async () => {
+        const [stagesRes, contactsRes, transRes] = await Promise.all([
+          supabase.from('pipeline_stages').select('*').order('display_order'),
+          supabase.from('contacts').select('*, pipeline_stages(*)').not('pipeline_stage_id', 'is', null).eq('pipeline_archived', false).order('updated_at', { ascending: false }),
+          supabase.from('transactions').select('*, contacts(first_name, last_name), properties(address_street, address_city)').not('status', 'in', '("closed","cancelled")'),
+        ]);
+        setStages(stagesRes.data || []);
+        setContacts(contactsRes.data || []);
+        // Compute summary from active transactions
+        const trans = transRes.data || [];
+        const grossVolume = trans.reduce((s, t) => s + (t.list_price || 0), 0);
+        const pipelineValue = trans.reduce((s, t) => s + (t.contract_price || t.list_price || 0), 0);
+        const potentialComm = trans.reduce((s, t) => s + ((t.contract_price || t.list_price || 0) * (t.commission_rate || 0.025)), 0);
+        setSummary({ grossVolume, pipelineValue, potentialComm, totalActive: contactsRes.data?.length || 0 });
       };
 
-      const handleAddLead = async (e) => {
-        e.preventDefault();
-        try {
-          const { data: contactData, error: contactErr } = await supabase
-            .from('contacts')
-            .insert([{
-              first_name: formData.first_name,
-              last_name: formData.last_name,
-              email: formData.email,
-              phone: formData.phone,
-              contact_type: 'lead'
-            }])
-            .select();
-
-          if (contactErr) throw contactErr;
-          if (!contactData[0]) throw new Error('Failed to create contact');
-
-          const { error: leadErr } = await supabase.from('leads').insert([{
-            contact_id: contactData[0].id,
-            stage_id: formData.stage_id,
-            lead_type: formData.lead_type,
-            temperature: formData.temperature,
-            score: parseInt(formData.score),
-            budget_min: formData.budget_min ? parseInt(formData.budget_min) : null,
-            budget_max: formData.budget_max ? parseInt(formData.budget_max) : null,
-            desired_area: formData.desired_area
-          }]);
-
-          if (leadErr) throw leadErr;
-          setShowAddForm(false);
-          setFormData({
-            first_name: '', last_name: '', email: '', phone: '',
-            lead_type: 'buyer', temperature: 'hot', score: 50,
-            budget_min: '', budget_max: '', desired_area: '', stage_id: ''
-          });
-          fetchPipelineData();
-        } catch (err) {
-          console.error('Error adding lead:', err);
-          alert('Error adding lead: ' + err.message);
-        }
+      const moveStage = async (contactId, newStageId) => {
+        await supabase.from('contacts').update({ pipeline_stage_id: newStageId }).eq('id', contactId);
+        fetchPipeline();
       };
 
-      const handleDeleteLead = async (leadId, contactId) => {
-        if (!window.confirm('Delete this lead and contact?')) return;
-        try {
-          await supabase.from('leads').delete().eq('id', leadId);
-          await supabase.from('contacts').delete().eq('id', contactId);
-          setSelectedLead(null);
-          fetchPipelineData();
-        } catch (err) {
-          console.error('Error deleting lead:', err);
-          alert('Error deleting lead');
-        }
+      const archiveContact = async (contactId) => {
+        await supabase.from('contacts').update({ pipeline_archived: true }).eq('id', contactId);
+        fetchPipeline();
       };
 
-      const handleUpdateLead = async () => {
-        if (!editingLead) return;
-        try {
-          const { error: contactErr } = await supabase
-            .from('contacts')
-            .update({
-              first_name: editingLead.first_name,
-              last_name: editingLead.last_name,
-              email: editingLead.email,
-              phone: editingLead.phone
-            })
-            .eq('id', editingLead.contact_id);
+      const fmt = (v) => v ? '$' + Number(v).toLocaleString() : '$0';
+      const fmtK = (v) => v >= 1000000 ? '$' + (v/1000000).toFixed(1) + 'M' : v >= 1000 ? '$' + (v/1000).toFixed(0) + 'K' : fmt(v);
 
-          if (contactErr) throw contactErr;
-
-          const { error: leadErr } = await supabase.from('leads').update({
-            stage_id: editingLead.stage_id,
-            lead_type: editingLead.lead_type,
-            temperature: editingLead.temperature,
-            score: editingLead.score,
-            budget_min: editingLead.budget_min,
-            budget_max: editingLead.budget_max,
-            desired_area: editingLead.desired_area
-          }).eq('id', editingLead.id);
-
-          if (leadErr) throw leadErr;
-          setEditingLead(null);
-          setSelectedLead(null);
-          fetchPipelineData();
-        } catch (err) {
-          console.error('Error updating lead:', err);
-          alert('Error updating lead');
-        }
-      };
-
-      // Filters & sorting state
-      const [filterStage, setFilterStage] = useState('all');
-      const [filterTemp, setFilterTemp] = useState('all');
-      const [filterType, setFilterType] = useState('all');
-      const [searchQuery, setSearchQuery] = useState('');
-      const [expandedLead, setExpandedLead] = useState(null);
-
-      const tempOrder = { hot: 0, warm: 1, cold: 2 };
-      const stageColors = {
-        'New Lead': { bg: '#FFF0EC', dot: '#7F1330' },
-        'Contacted': { bg: '#FFEEE3', dot: '#FE8982' },
-        'Qualified': { bg: '#FFF0EC', dot: '#B72552' },
-        'Showing': { bg: '#E8F0F2', dot: '#003744' },
-        'Under Contract': { bg: '#E0F0F2', dot: '#003744' },
-        'Closed Won': { bg: '#E0F0F2', dot: '#006B5A' },
-        'Closed Lost': { bg: '#FFE5E8', dot: '#B72552' },
-        'Nurture': { bg: '#FFF5F0', dot: '#FFC6BF' },
-      };
-
-      const tempColors = { hot: '#B72552', warm: '#FE8982', cold: '#003744' };
-
-      const daysSince = (dateStr) => {
-        if (!dateStr) return '—';
-        const days = Math.floor((Date.now() - new Date(dateStr).getTime()) / 86400000);
-        if (days === 0) return 'Today';
-        if (days === 1) return '1d';
-        return days + 'd';
-      };
-
-      const formatBudget = (min, max) => {
-        if (!min && !max) return '—';
-        const fmt = (v) => v >= 1000000 ? '$' + (v/1000000).toFixed(1) + 'M' : '$' + (v/1000).toFixed(0) + 'k';
-        if (min && max && min !== max) return fmt(min) + '–' + fmt(max);
-        return fmt(max || min);
-      };
-
-      const handleMoveStage = async (leadId, newStageId) => {
-        try {
-          await supabase.from('leads').update({ stage_id: newStageId }).eq('id', leadId);
-          fetchPipelineData();
-        } catch (err) { console.error(err); }
-      };
-
-      // Filter and sort leads
-      const filteredLeads = leads
-        .filter(l => {
-          if (filterStage !== 'all' && l.stage_id !== filterStage) return false;
-          if (filterTemp !== 'all' && l.temperature !== filterTemp) return false;
-          if (filterType !== 'all' && l.lead_type !== filterType) return false;
-          if (searchQuery) {
-            const name = ((l.contacts?.first_name || '') + ' ' + (l.contacts?.last_name || '')).toLowerCase();
-            if (!name.includes(searchQuery.toLowerCase())) return false;
-          }
-          return true;
-        })
-        .sort((a, b) => {
-          const tempDiff = (tempOrder[a.temperature] || 2) - (tempOrder[b.temperature] || 2);
-          if (tempDiff !== 0) return tempDiff;
-          return (b.score || 0) - (a.score || 0);
-        });
-
-      // Stage summary counts
-      const stageCounts = stages.map(s => ({
-        ...s,
-        count: leads.filter(l => l.stage_id === s.id).length,
-        colors: stageColors[s.name] || { bg: '#FFF0EC', dot: '#7F1330' }
-      }));
-      const totalLeads = leads.length;
+      const stageContacts = (stageId) => contacts.filter(c => c.pipeline_stage_id === stageId);
 
       return (
-        <div className="flex-1 flex flex-col p-3 sm:p-6 overflow-hidden min-h-0" style={{ paddingBottom: '0.75rem' }}>
-          <div className="flex justify-between items-center mb-5">
+        <div className="flex-1 flex flex-col p-3 sm:p-6 overflow-hidden min-h-0">
+          <div className="flex items-center justify-between mb-5">
             <div>
-              <h2 className="text-lg font-semibold">Pipeline</h2>
-              <p className="text-xs text-secondary mt-0.5">{totalLeads} leads · {leads.filter(l => l.temperature === 'hot').length} hot</p>
-            </div>
-            <button onClick={() => setShowAddForm(true)} className="btn-primary">+ Add Lead</button>
-          </div>
-
-          {showAddForm && (
-            <div className="fixed inset-0 bg-black/20 z-[999] flex items-center justify-center">
-              <div className="bg-white rounded-2xl p-8 max-w-lg w-full mx-4 max-h-[85vh] overflow-y-auto border border-[#F0D5CC] shadow-lg">
-                <h3 className="text-lg font-semibold mb-6">Add New Lead</h3>
-                <form onSubmit={handleAddLead} className="space-y-4">
-                  <div className="grid grid-cols-2 gap-3">
-                    <div>
-                      <label className="text-sm text-secondary mb-2 block">First Name</label>
-                      <input
-                        type="text"
-                        value={formData.first_name}
-                        onChange={(e) => setFormData({...formData, first_name: e.target.value})}
-                        className="input-glass w-full"
-                        required
-                      />
-                    </div>
-                    <div>
-                      <label className="text-sm text-secondary mb-2 block">Last Name</label>
-                      <input
-                        type="text"
-                        value={formData.last_name}
-                        onChange={(e) => setFormData({...formData, last_name: e.target.value})}
-                        className="input-glass w-full"
-                        required
-                      />
-                    </div>
-                  </div>
-                  <div>
-                    <label className="text-sm text-secondary mb-2 block">Email</label>
-                    <input
-                      type="email"
-                      value={formData.email}
-                      onChange={(e) => setFormData({...formData, email: e.target.value})}
-                      className="input-glass w-full"
-                    />
-                  </div>
-                  <div>
-                    <label className="text-sm text-secondary mb-2 block">Phone</label>
-                    <input
-                      type="tel"
-                      value={formData.phone}
-                      onChange={(e) => setFormData({...formData, phone: e.target.value})}
-                      className="input-glass w-full"
-                    />
-                  </div>
-                  <div className="grid grid-cols-2 gap-3">
-                    <div>
-                      <label className="text-sm text-secondary mb-2 block">Lead Type</label>
-                      <select
-                        value={formData.lead_type}
-                        onChange={(e) => setFormData({...formData, lead_type: e.target.value})}
-                        className="input-glass w-full"
-                      >
-                        <option value="buyer">Buyer</option>
-                        <option value="seller">Seller</option>
-                        <option value="both">Both</option>
-                        <option value="investor">Investor</option>
-                      </select>
-                    </div>
-                    <div>
-                      <label className="text-sm text-secondary mb-2 block">Temperature</label>
-                      <select
-                        value={formData.temperature}
-                        onChange={(e) => setFormData({...formData, temperature: e.target.value})}
-                        className="input-glass w-full"
-                      >
-                        <option value="hot">Hot</option>
-                        <option value="warm">Warm</option>
-                        <option value="cold">Cold</option>
-                      </select>
-                    </div>
-                  </div>
-                  <div>
-                    <label className="text-sm text-secondary mb-2 block">Score: {formData.score}</label>
-                    <input
-                      type="range"
-                      min="0"
-                      max="100"
-                      value={formData.score}
-                      onChange={(e) => setFormData({...formData, score: e.target.value})}
-                      className="w-full"
-                    />
-                  </div>
-                  <div className="grid grid-cols-2 gap-3">
-                    <div>
-                      <label className="text-sm text-secondary mb-2 block">Min Budget</label>
-                      <input
-                        type="number"
-                        value={formData.budget_min}
-                        onChange={(e) => setFormData({...formData, budget_min: e.target.value})}
-                        className="input-glass w-full"
-                        placeholder="e.g. 200000"
-                      />
-                    </div>
-                    <div>
-                      <label className="text-sm text-secondary mb-2 block">Max Budget</label>
-                      <input
-                        type="number"
-                        value={formData.budget_max}
-                        onChange={(e) => setFormData({...formData, budget_max: e.target.value})}
-                        className="input-glass w-full"
-                        placeholder="e.g. 500000"
-                      />
-                    </div>
-                  </div>
-                  <div>
-                    <label className="text-sm text-secondary mb-2 block">Desired Area</label>
-                    <input
-                      type="text"
-                      value={formData.desired_area}
-                      onChange={(e) => setFormData({...formData, desired_area: e.target.value})}
-                      className="input-glass w-full"
-                      placeholder="e.g. Crown Point"
-                    />
-                  </div>
-                  <div>
-                    <label className="text-sm text-secondary mb-2 block">Pipeline Stage</label>
-                    <select
-                      value={formData.stage_id}
-                      onChange={(e) => setFormData({...formData, stage_id: e.target.value})}
-                      className="input-glass w-full"
-                      required
-                    >
-                      <option value="">Select a stage...</option>
-                      {stages.map(s => (<option key={s.id} value={s.id}>{s.name}</option>))}
-                    </select>
-                  </div>
-                  <div className="flex gap-3 pt-4">
-                    <button type="button" onClick={() => setShowAddForm(false)} className="btn-secondary flex-1">Cancel</button>
-                    <button type="submit" className="btn-primary flex-1">Add Lead</button>
-                  </div>
-                </form>
-              </div>
-            </div>
-          )}
-
-          {editingLead && (
-            <div className="fixed inset-0 bg-black/20 z-[999] flex items-center justify-center">
-              <div className="bg-white rounded-2xl p-8 max-w-lg w-full mx-4 max-h-[85vh] overflow-y-auto border border-[#F0D5CC] shadow-lg">
-                <h3 className="text-lg font-semibold mb-6">Edit Lead</h3>
-                <form onSubmit={(e) => { e.preventDefault(); handleUpdateLead(); }} className="space-y-4">
-                  <div className="grid grid-cols-2 gap-3">
-                    <div>
-                      <label className="text-sm text-secondary mb-2 block">First Name</label>
-                      <input
-                        type="text"
-                        value={editingLead.first_name || ''}
-                        onChange={(e) => setEditingLead({...editingLead, first_name: e.target.value})}
-                        className="input-glass w-full"
-                      />
-                    </div>
-                    <div>
-                      <label className="text-sm text-secondary mb-2 block">Last Name</label>
-                      <input
-                        type="text"
-                        value={editingLead.last_name || ''}
-                        onChange={(e) => setEditingLead({...editingLead, last_name: e.target.value})}
-                        className="input-glass w-full"
-                      />
-                    </div>
-                  </div>
-                  <div className="grid grid-cols-2 gap-3">
-                    <div>
-                      <label className="text-sm text-secondary mb-2 block">Email</label>
-                      <input type="email" value={editingLead.email || ''} onChange={(e) => setEditingLead({...editingLead, email: e.target.value})} className="input-glass w-full" />
-                    </div>
-                    <div>
-                      <label className="text-sm text-secondary mb-2 block">Phone</label>
-                      <input type="tel" value={editingLead.phone || ''} onChange={(e) => setEditingLead({...editingLead, phone: e.target.value})} className="input-glass w-full" />
-                    </div>
-                  </div>
-                  <div className="grid grid-cols-2 gap-3">
-                    <div>
-                      <label className="text-sm text-secondary mb-2 block">Type</label>
-                      <select value={editingLead.lead_type || 'buyer'} onChange={(e) => setEditingLead({...editingLead, lead_type: e.target.value})} className="input-glass w-full">
-                        <option value="buyer">Buyer</option>
-                        <option value="seller">Seller</option>
-                        <option value="both">Both</option>
-                      </select>
-                    </div>
-                    <div>
-                      <label className="text-sm text-secondary mb-2 block">Temperature</label>
-                      <select value={editingLead.temperature || 'warm'} onChange={(e) => setEditingLead({...editingLead, temperature: e.target.value})} className="input-glass w-full">
-                        <option value="hot">Hot</option>
-                        <option value="warm">Warm</option>
-                        <option value="cold">Cold</option>
-                      </select>
-                    </div>
-                  </div>
-                  <div>
-                    <label className="text-sm text-secondary mb-2 block">Pipeline Stage</label>
-                    <select value={editingLead.stage_id || ''} onChange={(e) => setEditingLead({...editingLead, stage_id: e.target.value})} className="input-glass w-full">
-                      {stages.map(s => (<option key={s.id} value={s.id}>{s.name}</option>))}
-                    </select>
-                  </div>
-                  <div>
-                    <label className="text-sm text-secondary mb-2 block">Score: {editingLead.score || 0}</label>
-                    <input type="range" min="0" max="100" value={editingLead.score || 0} onChange={(e) => setEditingLead({...editingLead, score: parseInt(e.target.value)})} className="w-full" style={{ accentColor: '#7F1330' }} />
-                  </div>
-                  <div className="grid grid-cols-2 gap-3">
-                    <div>
-                      <label className="text-sm text-secondary mb-2 block">Budget Min</label>
-                      <input type="number" value={editingLead.budget_min || ''} onChange={(e) => setEditingLead({...editingLead, budget_min: e.target.value})} className="input-glass w-full" />
-                    </div>
-                    <div>
-                      <label className="text-sm text-secondary mb-2 block">Budget Max</label>
-                      <input type="number" value={editingLead.budget_max || ''} onChange={(e) => setEditingLead({...editingLead, budget_max: e.target.value})} className="input-glass w-full" />
-                    </div>
-                  </div>
-                  <div>
-                    <label className="text-sm text-secondary mb-2 block">Desired Area</label>
-                    <input type="text" value={editingLead.desired_area || ''} onChange={(e) => setEditingLead({...editingLead, desired_area: e.target.value})} className="input-glass w-full" />
-                  </div>
-                  <div className="flex gap-3 pt-4">
-                    <button type="button" onClick={() => setEditingLead(null)} className="btn-secondary flex-1">Cancel</button>
-                    <button type="submit" className="btn-primary flex-1">Save Changes</button>
-                  </div>
-                </form>
-              </div>
-            </div>
-          )}
-
-          {/* Stage Summary Bar */}
-          <div className="mb-4 bg-white rounded-xl border border-[#F0D5CC] p-3">
-            <div className="flex rounded-lg overflow-hidden h-8">
-              {stageCounts.filter(s => s.count > 0).map((s, i) => (
-                <div
-                  key={s.id}
-                  className="flex items-center justify-center gap-1 px-2 cursor-pointer transition-opacity hover:opacity-80"
-                  style={{
-                    background: s.colors.bg,
-                    flex: s.count,
-                    borderRight: i < stageCounts.filter(sc => sc.count > 0).length - 1 ? '2px solid white' : 'none'
-                  }}
-                  onClick={() => setFilterStage(filterStage === s.id ? 'all' : s.id)}
-                  title={s.name + ': ' + s.count}
-                >
-                  <div className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: s.colors.dot }}></div>
-                  <span className="text-xs font-medium truncate" style={{ color: s.colors.dot }}>{s.count}</span>
-                </div>
-              ))}
-            </div>
-            <div className="flex gap-3 mt-2 flex-wrap">
-              {stageCounts.filter(s => s.count > 0).map(s => (
-                <button
-                  key={s.id}
-                  onClick={() => setFilterStage(filterStage === s.id ? 'all' : s.id)}
-                  className="text-xs px-2 py-0.5 rounded-full transition-all"
-                  style={{
-                    background: filterStage === s.id ? s.colors.dot : 'transparent',
-                    color: filterStage === s.id ? 'white' : s.colors.dot,
-                    fontWeight: filterStage === s.id ? 600 : 400
-                  }}
-                >
-                  {s.name}
-                </button>
-              ))}
-              {filterStage !== 'all' && (
-                <button onClick={() => setFilterStage('all')} className="text-xs text-secondary hover:text-[#2D2D2D]">Clear</button>
-              )}
+              <h2 className="text-lg font-semibold" style={{color:'#7F1330'}}>Pipeline</h2>
+              <p className="text-secondary text-xs mt-0.5">{summary.totalActive} active contacts in pipeline</p>
             </div>
           </div>
 
-          {/* Filters Row */}
-          <div className="flex gap-2 mb-4 flex-wrap items-center">
-            <input
-              type="text"
-              placeholder="Search leads..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              className="input-glass text-sm flex-1 min-w-[140px]"
-              style={{ maxWidth: 220, padding: '6px 12px' }}
-            />
-            <select value={filterTemp} onChange={e => setFilterTemp(e.target.value)} className="input-glass text-sm" style={{ padding: '6px 10px' }}>
-              <option value="all">All Temps</option>
-              <option value="hot">Hot</option>
-              <option value="warm">Warm</option>
-              <option value="cold">Cold</option>
-            </select>
-            <select value={filterType} onChange={e => setFilterType(e.target.value)} className="input-glass text-sm" style={{ padding: '6px 10px' }}>
-              <option value="all">All Types</option>
-              <option value="buyer">Buyer</option>
-              <option value="seller">Seller</option>
-              <option value="both">Both</option>
-              <option value="investor">Investor</option>
-            </select>
-            {(filterTemp !== 'all' || filterType !== 'all' || searchQuery) && (
-              <button onClick={() => { setFilterTemp('all'); setFilterType('all'); setSearchQuery(''); }} className="text-xs text-secondary hover:text-[#2D2D2D] px-2">Reset</button>
-            )}
-            <span className="text-xs text-secondary ml-auto">{filteredLeads.length} result{filteredLeads.length !== 1 ? 's' : ''}</span>
+          {/* Summary cards */}
+          <div className="grid grid-cols-3 gap-4 mb-5">
+            <div className="glass p-4 text-center">
+              <p className="text-xs text-secondary">Gross List Volume</p>
+              <p className="text-xl font-semibold" style={{color:'#7F1330'}}>{fmtK(summary.grossVolume)}</p>
+            </div>
+            <div className="glass p-4 text-center">
+              <p className="text-xs text-secondary">Pipeline Value</p>
+              <p className="text-xl font-semibold">{fmtK(summary.pipelineValue)}</p>
+            </div>
+            <div className="glass p-4 text-center">
+              <p className="text-xs text-secondary">Potential Net Commission (2.5%)</p>
+              <p className="text-xl font-semibold" style={{color:'#22c55e'}}>{fmtK(summary.potentialComm)}</p>
+            </div>
           </div>
 
-          {/* Lead List */}
-          <div className="flex-1 overflow-y-auto min-h-0 space-y-1.5">
-            {filteredLeads.length === 0 && (
-              <div className="text-center py-12 text-sm text-secondary">
-                {leads.length === 0 ? 'No leads yet. Add your first lead to get started.' : 'No leads match your filters.'}
-              </div>
-            )}
-            {filteredLeads.map(lead => {
-              const name = ((lead.contacts?.first_name || '') + ' ' + (lead.contacts?.last_name || '')).trim();
-              const stageName = lead.pipeline_stages?.name || '—';
-              const stageColor = stageColors[stageName] || { bg: '#FFF0EC', dot: '#7F1330' };
-              const isExpanded = expandedLead === lead.id;
-
-              return (
-                <div key={lead.id} className="bg-white rounded-xl border border-[#F0D5CC] transition-all hover:border-[#FFC6BF]" style={{ borderLeft: `3px solid ${tempColors[lead.temperature] || '#7F1330'}` }}>
-                  {/* Main Row */}
-                  <div
-                    className="flex items-center gap-3 px-4 py-3 cursor-pointer"
-                    onClick={() => setExpandedLead(isExpanded ? null : lead.id)}
-                  >
-                    {/* Temperature Dot */}
-                    <div className="flex-shrink-0">
-                      <div className="w-2.5 h-2.5 rounded-full" style={{ background: tempColors[lead.temperature] || '#7F1330' }}
-                        title={lead.temperature}></div>
-                    </div>
-
-                    {/* Name + Contact */}
-                    <div className="flex-1 min-w-0">
-                      <p className="text-sm font-semibold truncate">{name || 'Unknown'}</p>
-                      <p className="text-xs text-secondary truncate">{lead.contacts?.phone || lead.contacts?.email || '—'}</p>
-                    </div>
-
-                    {/* Type Badge */}
-                    <span className="text-xs px-2 py-0.5 rounded-full font-medium flex-shrink-0"
-                      style={{ background: '#FFF0EC', color: '#7F1330' }}>
-                      {lead.lead_type}
-                    </span>
-
-                    {/* Stage Pill */}
-                    <span className="text-xs px-2 py-0.5 rounded-full font-medium flex-shrink-0 hidden sm:inline-block"
-                      style={{ background: stageColor.bg, color: stageColor.dot }}>
-                      {stageName}
-                    </span>
-
-                    {/* Budget */}
-                    <span className="text-xs font-medium text-secondary flex-shrink-0 hidden md:inline-block" style={{ minWidth: 70, textAlign: 'right' }}>
-                      {formatBudget(lead.budget_min, lead.budget_max)}
-                    </span>
-
-                    {/* Score */}
-                    <div className="flex-shrink-0 hidden sm:flex items-center gap-1" style={{ minWidth: 40 }}>
-                      <div className="w-6 h-1.5 rounded-full bg-[#FFEEE3] overflow-hidden">
-                        <div className="h-full rounded-full" style={{
-                          width: (lead.score || 0) + '%',
-                          background: lead.score >= 70 ? '#003744' : lead.score >= 40 ? '#FE8982' : '#B72552'
-                        }}></div>
+          {/* Stage columns */}
+          <div className="flex-1 overflow-y-auto">
+            <div className="space-y-3">
+              {stages.filter(s => s.name !== 'Closed Won' && s.name !== 'Closed Lost').map(stage => {
+                const sc = stageContacts(stage.id);
+                const isExpanded = expandedStage === stage.id || sc.length <= 3;
+                return (
+                  <div key={stage.id} className="glass">
+                    <div className="flex items-center justify-between p-3 cursor-pointer" onClick={() => setExpandedStage(expandedStage === stage.id ? null : stage.id)} style={{borderLeft: '4px solid ' + stage.color}}>
+                      <div className="flex items-center gap-3">
+                        <h3 className="font-medium text-sm">{stage.name}</h3>
+                        <span className="badge" style={{background: stage.color + '20', color: stage.color}}>{sc.length}</span>
                       </div>
-                      <span className="text-xs text-secondary">{lead.score}</span>
+                      <span className="text-xs text-secondary">{isExpanded ? '▾' : '▸'}</span>
                     </div>
-
-                    {/* Days */}
-                    <span className="text-xs text-secondary flex-shrink-0" style={{ minWidth: 32, textAlign: 'right' }}>{daysSince(lead.created_at)}</span>
-
-                    {/* Expand Arrow */}
-                    <svg className="flex-shrink-0 transition-transform" style={{ transform: isExpanded ? 'rotate(180deg)' : 'rotate(0deg)', width: 14, height: 14 }} viewBox="0 0 24 24" fill="none" stroke="#FFC6BF" strokeWidth="2">
-                      <polyline points="6 9 12 15 18 9"></polyline>
-                    </svg>
+                    {(isExpanded || sc.length <= 3) && sc.length > 0 && (
+                      <div className="px-3 pb-3 space-y-2">
+                        {(isExpanded ? sc : sc.slice(0, 3)).map(c => (
+                          <div key={c.id} className="flex items-center justify-between p-2.5 rounded-lg hover:bg-[#FFF5F0] transition">
+                            <div className="flex items-center gap-3">
+                              <div className="w-8 h-8 rounded-full flex items-center justify-center text-white text-xs font-semibold" style={{background:'linear-gradient(135deg, #7F1330, #B72552)'}}>
+                                {(c.first_name?.[0] || '')}{(c.last_name?.[0] || '')}
+                              </div>
+                              <div>
+                                <p className="text-sm font-medium">{c.first_name} {c.last_name}</p>
+                                <div className="flex items-center gap-2">
+                                  {c.lead_type && <span className="text-xs text-secondary">{c.lead_type}</span>}
+                                  {c.temperature && <span className="text-xs" style={{color: c.temperature === 'hot' ? '#ef4444' : c.temperature === 'warm' ? '#f59e0b' : '#6b7280'}}>{c.temperature}</span>}
+                                </div>
+                              </div>
+                            </div>
+                            <div className="flex items-center gap-1">
+                              <select className="input-glass text-xs py-1 px-2" value={c.pipeline_stage_id} onChange={e => { e.stopPropagation(); moveStage(c.id, e.target.value); }} onClick={e => e.stopPropagation()}>
+                                {stages.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                              </select>
+                              <button onClick={(e) => { e.stopPropagation(); archiveContact(c.id); }} className="text-xs text-secondary hover:text-[#B72552] px-1" title="Remove from pipeline">✕</button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
-
-                  {/* Expanded Detail */}
-                  {isExpanded && (
-                    <div className="px-4 pb-4 border-t border-[#FFC6BF]">
-                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-3 mb-3">
-                        <div>
-                          <p className="text-xs text-secondary mb-0.5">Temperature</p>
-                          <span className="text-xs font-semibold capitalize" style={{ color: tempColors[lead.temperature] }}>{lead.temperature}</span>
-                        </div>
-                        <div>
-                          <p className="text-xs text-secondary mb-0.5">Budget</p>
-                          <p className="text-xs font-medium">{formatBudget(lead.budget_min, lead.budget_max)}</p>
-                        </div>
-                        <div>
-                          <p className="text-xs text-secondary mb-0.5">Area</p>
-                          <p className="text-xs font-medium">{lead.desired_area || '—'}</p>
-                        </div>
-                        <div>
-                          <p className="text-xs text-secondary mb-0.5">Score</p>
-                          <p className="text-xs font-medium">{lead.score}/100</p>
-                        </div>
-                      </div>
-
-                      {/* Stage Mover */}
-                      <div className="flex items-center gap-2 mb-3" onClick={e => e.stopPropagation()}>
-                        <span className="text-xs text-secondary">Stage:</span>
-                        <select
-                          value={lead.stage_id}
-                          onChange={(e) => handleMoveStage(lead.id, e.target.value)}
-                          className="input-glass text-xs flex-1"
-                          style={{ padding: '4px 8px' }}
-                        >
-                          {stages.map(s => (<option key={s.id} value={s.id}>{s.name}</option>))}
-                        </select>
-                      </div>
-
-                      {/* Quick Actions */}
-                      <div className="flex gap-2">
-                        {lead.contacts?.phone && (
-                          <a href={'tel:' + lead.contacts.phone} className="btn-secondary text-xs py-1.5 px-3 flex items-center gap-1">
-                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M22 16.92v3a2 2 0 01-2.18 2 19.79 19.79 0 01-8.63-3.07 19.5 19.5 0 01-6-6A19.79 19.79 0 012.12 4.18 2 2 0 014.11 2h3a2 2 0 012 1.72c.127.96.361 1.903.7 2.81a2 2 0 01-.45 2.11L8.09 9.91a16 16 0 006 6l1.27-1.27a2 2 0 012.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0122 16.92z"/></svg>
-                            Call
-                          </a>
-                        )}
-                        {lead.contacts?.phone && (
-                          <a href={'sms:' + lead.contacts.phone} className="btn-secondary text-xs py-1.5 px-3 flex items-center gap-1">
-                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>
-                            Text
-                          </a>
-                        )}
-                        <button onClick={() => {
-                          setSelectedLead(lead);
-                          setEditingLead({
-                            ...lead,
-                            first_name: lead.contacts?.first_name || '',
-                            last_name: lead.contacts?.last_name || '',
-                            email: lead.contacts?.email || '',
-                            phone: lead.contacts?.phone || '',
-                          });
-                        }} className="btn-secondary text-xs py-1.5 px-3 flex items-center gap-1">
-                          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
-                          Edit
-                        </button>
-                        <button onClick={() => handleDeleteLead(lead.id, lead.contact_id)} className="text-xs py-1.5 px-3 rounded-lg border border-[#F0D5CC] text-[#B72552] hover:bg-[#FFE5E8] transition-colors flex items-center gap-1">
-                          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg>
-                          Delete
-                        </button>
-                      </div>
-                    </div>
-                  )}
-                </div>
-              );
-            })}
+                );
+              })}
+            </div>
           </div>
-
         </div>
       );
     }
@@ -1830,54 +1310,54 @@
       );
     }
 
-    // CLIENTS
+
+
+    // CLIENTS — Contact hub (source of truth for everything)
     function Clients() {
       const [contacts, setContacts] = useState([]);
+      const [stages, setStages] = useState([]);
       const [searchTerm, setSearchTerm] = useState('');
       const [filterType, setFilterType] = useState('all');
       const [showAddForm, setShowAddForm] = useState(false);
       const [editingContact, setEditingContact] = useState(null);
       const [selectedContact, setSelectedContact] = useState(null);
-      const [contactHistory, setContactHistory] = useState({ notes: [], comms: [], showings: [], transactions: [], leads: [] });
+      const [contactHistory, setContactHistory] = useState({ notes: [], comms: [], showings: [], transactions: [] });
       const [historyTab, setHistoryTab] = useState('notes');
       const [formData, setFormData] = useState({
         first_name: '', last_name: '', email: '', phone: '',
         address_street: '', address_city: '', address_state: '', address_zip: '',
-        contact_type: 'client'
+        contact_type: 'client', company_name: '', add_to_pipeline: false, pipeline_stage_id: '', lead_type: 'buyer'
       });
 
       useEffect(() => {
         fetchContacts();
+        fetchStages();
         const handleRefresh = () => { fetchContacts(); if (selectedContact) fetchContactHistory(selectedContact.id); };
         window.addEventListener('crm-data-changed', handleRefresh);
         return () => window.removeEventListener('crm-data-changed', handleRefresh);
       }, []);
 
       const fetchContacts = async () => {
-        try {
-          const { data, error } = await supabase.from('contacts').select('*').order('first_name');
-          if (error) throw error;
-          if (data) setContacts(data);
-        } catch (err) { console.error('Error fetching contacts:', err); }
+        const { data } = await supabase.from('contacts').select('*, pipeline_stages(id, name, color, display_order)').order('first_name');
+        setContacts(data || []);
+      };
+
+      const fetchStages = async () => {
+        const { data } = await supabase.from('pipeline_stages').select('*').order('display_order');
+        setStages(data || []);
       };
 
       const fetchContactHistory = async (contactId) => {
-        try {
-          const [notesRes, commsRes, showingsRes, transRes, leadsRes] = await Promise.all([
-            supabase.from('notes').select('*').eq('contact_id', contactId).order('created_at', { ascending: false }),
-            supabase.from('communications').select('*').eq('contact_id', contactId).order('sent_at', { ascending: false }),
-            supabase.from('showings').select('*').eq('contact_id', contactId).order('showing_date', { ascending: false }),
-            supabase.from('transactions').select('*, properties(address, city, state, zip)').eq('contact_id', contactId).order('created_at', { ascending: false }),
-            supabase.from('leads').select('*, pipeline_stages(name)').eq('contact_id', contactId)
-          ]);
-          setContactHistory({
-            notes: notesRes.data || [],
-            comms: commsRes.data || [],
-            showings: showingsRes.data || [],
-            transactions: transRes.data || [],
-            leads: leadsRes.data || []
-          });
-        } catch (err) { console.error('Error fetching history:', err); }
+        const [notesRes, commsRes, showingsRes, transRes] = await Promise.all([
+          supabase.from('notes').select('*').eq('contact_id', contactId).order('created_at', { ascending: false }),
+          supabase.from('communications').select('*').eq('contact_id', contactId).order('sent_at', { ascending: false }),
+          supabase.from('showings').select('*').eq('contact_id', contactId).order('showing_date', { ascending: false }),
+          supabase.from('transactions').select('*, properties(address_street, address_city)').eq('contact_id', contactId).order('created_at', { ascending: false }),
+        ]);
+        setContactHistory({
+          notes: notesRes.data || [], comms: commsRes.data || [],
+          showings: showingsRes.data || [], transactions: transRes.data || [],
+        });
       };
 
       const openContactDetail = (contact) => {
@@ -1888,40 +1368,77 @@
 
       const handleAddContact = async (e) => {
         e.preventDefault();
-        try {
-          const { error } = await supabase.from('contacts').insert([formData]);
-          if (error) throw error;
-          setShowAddForm(false);
-          setFormData({ first_name: '', last_name: '', email: '', phone: '', address_street: '', address_city: '', address_state: '', address_zip: '', contact_type: 'client', company_name: '' });
-          fetchContacts();
-        } catch (err) { console.error(err); alert('Error adding contact'); }
+        const { add_to_pipeline, pipeline_stage_id, lead_type, ...contactFields } = formData;
+        const insertData = { ...contactFields };
+        if (add_to_pipeline && pipeline_stage_id) {
+          insertData.pipeline_stage_id = pipeline_stage_id;
+          insertData.lead_type = lead_type;
+          insertData.temperature = 'warm';
+          insertData.lead_score = 50;
+          insertData.pipeline_entered_at = new Date().toISOString();
+          insertData.contact_type = 'lead';
+        }
+        const { error } = await supabase.from('contacts').insert([insertData]);
+        if (error) { alert('Error: ' + error.message); return; }
+        setShowAddForm(false);
+        setFormData({ first_name: '', last_name: '', email: '', phone: '', address_street: '', address_city: '', address_state: '', address_zip: '', contact_type: 'client', company_name: '', add_to_pipeline: false, pipeline_stage_id: '', lead_type: 'buyer' });
+        fetchContacts();
       };
 
       const handleUpdateContact = async () => {
         if (!editingContact) return;
-        try {
-          const { id, created_at, updated_at, ...u } = editingContact;
-          const { error } = await supabase.from('contacts').update({
-            first_name: u.first_name, last_name: u.last_name, email: u.email, phone: u.phone,
-            address_street: u.address_street, address_city: u.address_city, address_state: u.address_state, address_zip: u.address_zip,
-            contact_type: u.contact_type, source: u.source, notes: u.notes,
-            company_name: u.company_name || null, preferred_channel: u.preferred_channel || null,
-            sphere_tier: u.sphere_tier || null, birthday: u.birthday || null, anniversary: u.anniversary || null,
-          }).eq('id', id);
-          if (error) throw error;
-          setEditingContact(null);
-          fetchContacts();
-          if (selectedContact && selectedContact.id === id) setSelectedContact({...editingContact});
-        } catch (err) { console.error(err); alert('Error updating contact'); }
+        const { id, created_at, updated_at, pipeline_stages, ...u } = editingContact;
+        const { error } = await supabase.from('contacts').update({
+          first_name: u.first_name, last_name: u.last_name, email: u.email, phone: u.phone,
+          address_street: u.address_street, address_city: u.address_city, address_state: u.address_state, address_zip: u.address_zip,
+          contact_type: u.contact_type, source: u.source, notes: u.notes,
+          company_name: u.company_name || null, preferred_channel: u.preferred_channel || null,
+          sphere_tier: u.sphere_tier || null, birthday: u.birthday || null, anniversary: u.anniversary || null,
+        }).eq('id', id);
+        if (error) { alert('Error: ' + error.message); return; }
+        setEditingContact(null);
+        fetchContacts();
+        if (selectedContact?.id === id) {
+          const { data } = await supabase.from('contacts').select('*, pipeline_stages(id, name, color, display_order)').eq('id', id).single();
+          if (data) setSelectedContact(data);
+        }
       };
 
       const handleDeleteContact = async (id) => {
         if (!window.confirm('Delete this contact and all linked records?')) return;
-        try {
-          await supabase.from('contacts').delete().eq('id', id);
-          if (selectedContact && selectedContact.id === id) setSelectedContact(null);
-          fetchContacts();
-        } catch (err) { console.error(err); alert('Error deleting contact'); }
+        await supabase.from('contacts').delete().eq('id', id);
+        if (selectedContact?.id === id) setSelectedContact(null);
+        fetchContacts();
+      };
+
+      const addToPipeline = async (contactId, stageId, leadType) => {
+        await supabase.from('contacts').update({
+          pipeline_stage_id: stageId, lead_type: leadType || 'buyer', temperature: 'warm',
+          lead_score: 50, pipeline_entered_at: new Date().toISOString(), pipeline_archived: false,
+        }).eq('id', contactId);
+        fetchContacts();
+        if (selectedContact?.id === contactId) {
+          const { data } = await supabase.from('contacts').select('*, pipeline_stages(id, name, color, display_order)').eq('id', contactId).single();
+          if (data) setSelectedContact(data);
+        }
+      };
+
+      const changeStage = async (contactId, newStageId) => {
+        await supabase.from('contacts').update({ pipeline_stage_id: newStageId }).eq('id', contactId);
+        fetchContacts();
+        if (selectedContact?.id === contactId) {
+          const { data } = await supabase.from('contacts').select('*, pipeline_stages(id, name, color, display_order)').eq('id', contactId).single();
+          if (data) setSelectedContact(data);
+        }
+      };
+
+      const removeFromPipeline = async (contactId) => {
+        await supabase.from('contacts').update({ pipeline_stage_id: null, pipeline_archived: true }).eq('id', contactId);
+        fetchContacts();
+        if (selectedContact?.id === contactId) {
+          const { data } = await supabase.from('contacts').select('*, pipeline_stages(id, name, color, display_order)').eq('id', contactId).single();
+          if (data) setSelectedContact(data);
+        }
       };
 
       const getCategory = (type) => {
@@ -1933,29 +1450,22 @@
 
       const filtered = contacts.filter(c => {
         const nameMatch = `${c.first_name} ${c.last_name} ${c.email || ''} ${c.phone || ''} ${c.company_name || ''}`.toLowerCase().includes(searchTerm.toLowerCase());
-        const typeMatch = filterType === 'all' || getCategory(c.contact_type) === filterType;
+        const typeMatch = filterType === 'all' || (filterType === 'pipeline' ? c.pipeline_stage_id && !c.pipeline_archived : getCategory(c.contact_type) === filterType);
         return nameMatch && typeMatch;
       });
 
-      const typeCounts = { all: contacts.length, client: 0, vendor: 0, contractor: 0 };
-      contacts.forEach(c => { typeCounts[getCategory(c.contact_type)]++; });
+      const typeCounts = { all: contacts.length, client: 0, vendor: 0, contractor: 0, pipeline: 0 };
+      contacts.forEach(c => { typeCounts[getCategory(c.contact_type)]++; if (c.pipeline_stage_id && !c.pipeline_archived) typeCounts.pipeline++; });
 
-      const formatAddress = (c) => {
-        const parts = [c.address_street, c.address_city, c.address_state].filter(Boolean);
-        if (c.address_zip) parts.push(c.address_zip);
-        return parts.join(', ');
-      };
+      const formatAddress = (c) => [c.address_street, c.address_city, c.address_state, c.address_zip].filter(Boolean).join(', ');
+      const typeColor = (t) => ({ client: '#B72552', vendor: '#003744', contractor: '#7F1330', lead: '#FFC6BF', past_client: '#B72552', sphere: '#B72552' })[t] || '#7A5A5A';
 
-      const typeColor = (t) => {
-        const map = { client: '#B72552', vendor: '#003744', contractor: '#7F1330', lead: '#FFC6BF', past_client: '#B72552', sphere: '#B72552' };
-        return map[t] || '#7A5A5A';
-      };
-
-      // CONTACT DETAIL VIEW
+      // ---- CONTACT DETAIL VIEW ----
       if (selectedContact) {
         const c = selectedContact;
         const addr = formatAddress(c);
         const h = contactHistory;
+        const inPipeline = c.pipeline_stage_id && !c.pipeline_archived;
         const tabCounts = { notes: h.notes.length, comms: h.comms.length, showings: h.showings.length, transactions: h.transactions.length };
 
         return (
@@ -1965,7 +1475,7 @@
               Back to Contacts
             </button>
 
-            <div className="glass-card p-4 sm:p-6 mb-4">
+            <div className="glass p-4 sm:p-6 mb-4">
               <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3">
                 <div className="flex items-center gap-4">
                   <div className="w-14 h-14 rounded-full flex items-center justify-center text-white font-semibold text-lg flex-shrink-0" style={{background: 'linear-gradient(135deg, #7F1330, #B72552)'}}>
@@ -1973,59 +1483,65 @@
                   </div>
                   <div>
                     <h2 className="text-lg font-semibold">{c.first_name} {c.last_name}</h2>
-                    {c.company_name && ['vendor','contractor'].includes(getCategory(c.contact_type)) && (
-                      <p className="text-sm text-secondary">{c.company_name}</p>
-                    )}
-                    <span className="text-xs px-2 py-0.5 rounded-full text-white" style={{background: typeColor(c.contact_type)}}>{getCategory(c.contact_type)}</span>
+                    {c.company_name && <p className="text-sm text-secondary">{c.company_name}</p>}
+                    <div className="flex items-center gap-2 mt-1">
+                      <span className="text-xs px-2 py-0.5 rounded-full text-white" style={{background: typeColor(c.contact_type)}}>{c.contact_type}</span>
+                      {c.temperature && <span className="text-xs px-2 py-0.5 rounded-full" style={{background: c.temperature === 'hot' ? '#FFE5E8' : c.temperature === 'warm' ? '#FFEEE3' : '#E8F0F2', color: c.temperature === 'hot' ? '#B72552' : c.temperature === 'warm' ? '#FE8982' : '#003744'}}>{c.temperature}</span>}
+                      {c.lead_type && <span className="text-xs text-secondary">{c.lead_type}</span>}
+                    </div>
                   </div>
                 </div>
                 <div className="flex gap-2">
-                  {['vendor','contractor'].includes(getCategory(c.contact_type)) && (
-                    <button onClick={() => {
-                      const parts = [];
-                      if (c.company_name) parts.push(c.company_name);
-                      parts.push(`${c.first_name} ${c.last_name}`);
-                      if (c.phone) parts.push(c.phone);
-                      if (c.email) parts.push(c.email);
-                      navigator.clipboard.writeText(parts.join('\n'));
-                      alert('Contact info copied!');
-                    }} className="btn-secondary text-xs" title="Copy info to share with clients">
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{display:'inline',verticalAlign:'middle',marginRight:'4px'}}><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
-                      Copy Info
-                    </button>
-                  )}
                   <button onClick={() => setEditingContact(c)} className="btn-secondary text-xs">Edit</button>
                   <button onClick={() => handleDeleteContact(c.id)} className="btn-secondary text-xs text-[#B72552]">Delete</button>
                 </div>
               </div>
+
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mt-5">
-                <div>
-                  <p className="text-xs font-medium mb-0.5" style={{color:'#7A5A5A'}}>Email</p>
-                  <p className="text-sm">{c.email || <span className="text-secondary italic">Not set</span>}</p>
-                </div>
-                <div>
-                  <p className="text-xs font-medium mb-0.5" style={{color:'#7A5A5A'}}>Phone</p>
-                  <p className="text-sm">{c.phone || <span className="text-secondary italic">Not set</span>}</p>
-                </div>
-                <div>
-                  <p className="text-xs font-medium mb-0.5" style={{color:'#7A5A5A'}}>Address</p>
-                  <p className="text-sm">{addr || <span className="text-secondary italic">Not set</span>}</p>
-                </div>
+                <div><p className="text-xs font-medium mb-0.5 text-secondary">Email</p><p className="text-sm">{c.email || <span className="text-secondary italic">Not set</span>}</p></div>
+                <div><p className="text-xs font-medium mb-0.5 text-secondary">Phone</p><p className="text-sm">{c.phone || <span className="text-secondary italic">Not set</span>}</p></div>
+                <div><p className="text-xs font-medium mb-0.5 text-secondary">Address</p><p className="text-sm">{addr || <span className="text-secondary italic">Not set</span>}</p></div>
               </div>
-              {h.leads.length > 0 && (
-                <div className="mt-4 pt-4 border-t" style={{borderColor:'#F0D5CC'}}>
-                  <p className="text-xs font-medium mb-2" style={{color:'#7A5A5A'}}>Pipeline Status</p>
-                  <div className="flex flex-wrap gap-2">
-                    {h.leads.map(l => (
-                      <span key={l.id} className="text-xs px-2.5 py-1 rounded-full" style={{background:'#FFEEE3', color:'#7F1330'}}>
-                        {l.pipeline_stages?.name || 'Unknown Stage'} &middot; {l.temperature} &middot; {l.lead_type}
-                      </span>
-                    ))}
+
+              {/* Pipeline section */}
+              <div className="mt-4 pt-4 border-t" style={{borderColor:'#F0D5CC'}}>
+                <p className="text-xs font-medium mb-2 text-secondary">Pipeline Status</p>
+                {inPipeline ? (
+                  <div>
+                    <div className="flex flex-wrap gap-1 mb-2">
+                      {stages.filter(s => s.name !== 'Closed Won' && s.name !== 'Closed Lost').map(s => (
+                        <button key={s.id} onClick={() => changeStage(c.id, s.id)}
+                          className="px-2.5 py-1 rounded-lg text-xs font-medium transition-all"
+                          style={c.pipeline_stage_id === s.id ? { background: s.color, color: '#fff', border: '2px solid ' + s.color } : { background: '#F5F5F5', color: '#999', border: '2px solid transparent' }}>
+                          {s.name}
+                        </button>
+                      ))}
+                    </div>
+                    <button onClick={() => removeFromPipeline(c.id)} className="text-xs text-secondary hover:text-[#B72552]">Remove from pipeline</button>
                   </div>
-                </div>
-              )}
+                ) : (
+                  <div className="flex items-center gap-2">
+                    <select id="addStageSelect" className="input-glass text-xs py-1 px-2" defaultValue="">
+                      <option value="" disabled>Select stage...</option>
+                      {stages.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                    </select>
+                    <select id="addLeadType" className="input-glass text-xs py-1 px-2" defaultValue="buyer">
+                      <option value="buyer">Buyer</option>
+                      <option value="seller">Seller</option>
+                      <option value="both">Both</option>
+                      <option value="investor">Investor</option>
+                    </select>
+                    <button onClick={() => {
+                      const stageId = document.getElementById('addStageSelect').value;
+                      const leadType = document.getElementById('addLeadType').value;
+                      if (stageId) addToPipeline(c.id, stageId, leadType);
+                    }} className="btn-primary text-xs">Add to Pipeline</button>
+                  </div>
+                )}
+              </div>
             </div>
 
+            {/* History tabs */}
             <div className="flex gap-1 mb-3 overflow-x-auto">
               {[['notes','Notes'],['comms','Comms'],['showings','Showings'],['transactions','Transactions']].map(([key, label]) => (
                 <button key={key} onClick={() => setHistoryTab(key)} className="text-xs px-3 py-1.5 rounded-full whitespace-nowrap transition-all" style={historyTab === key ? {background:'#7F1330', color:'#fff'} : {background:'#FFEEE3', color:'#7A5A5A'}}>
@@ -2035,97 +1551,72 @@
             </div>
 
             <div className="flex-1 overflow-y-auto space-y-2">
-              {historyTab === 'notes' && (h.notes.length === 0 ? <p className="text-secondary text-xs py-8 text-center">No notes yet. Use the Assistant to add notes for this contact.</p> : h.notes.map(n => (
-                <div key={n.id} className="glass-card p-3">
-                  <p className="text-sm whitespace-pre-wrap">{n.content}</p>
-                  <p className="text-xs mt-1.5" style={{color:'#aaa'}}>{new Date(n.created_at).toLocaleDateString('en-US', { month:'short', day:'numeric', year:'numeric', hour:'numeric', minute:'2-digit' })}</p>
-                </div>
+              {historyTab === 'notes' && (h.notes.length === 0 ? <p className="text-secondary text-xs py-8 text-center">No notes yet.</p> : h.notes.map(n => (
+                <div key={n.id} className="glass p-3"><p className="text-sm whitespace-pre-wrap">{n.content}</p><p className="text-xs mt-1.5 text-secondary">{new Date(n.created_at).toLocaleDateString('en-US', { month:'short', day:'numeric', year:'numeric', hour:'numeric', minute:'2-digit' })}</p></div>
               )))}
-
-              {historyTab === 'comms' && (h.comms.length === 0 ? <p className="text-secondary text-xs py-8 text-center">No communications logged yet.</p> : h.comms.map(cm => (
-                <div key={cm.id} className="glass-card p-3">
-                  <div className="flex items-center gap-2 mb-1">
-                    <span className="text-xs px-2 py-0.5 rounded-full" style={{background:'#FFEEE3', color:'#7F1330'}}>{cm.channel}</span>
-                    <span className="text-xs" style={{color:'#aaa'}}>{cm.direction}</span>
-                  </div>
+              {historyTab === 'comms' && (h.comms.length === 0 ? <p className="text-secondary text-xs py-8 text-center">No communications logged.</p> : h.comms.map(cm => (
+                <div key={cm.id} className="glass p-3">
+                  <div className="flex items-center gap-2 mb-1"><span className="badge badge-warm" style={{fontSize:10}}>{cm.channel}</span><span className="text-xs text-secondary">{cm.direction}</span></div>
                   {cm.subject && <p className="text-sm font-medium">{cm.subject}</p>}
                   <p className="text-sm text-secondary">{cm.body}</p>
-                  <p className="text-xs mt-1.5" style={{color:'#aaa'}}>{cm.sent_at ? new Date(cm.sent_at).toLocaleDateString('en-US', { month:'short', day:'numeric', year:'numeric', hour:'numeric', minute:'2-digit' }) : ''}</p>
+                  <p className="text-xs mt-1.5 text-secondary">{cm.sent_at ? new Date(cm.sent_at).toLocaleDateString() : ''}</p>
                 </div>
               )))}
-
-              {historyTab === 'showings' && (h.showings.length === 0 ? <p className="text-secondary text-xs py-8 text-center">No showings recorded yet.</p> : h.showings.map(s => (
-                <div key={s.id} className="glass-card p-3 cursor-pointer hover:shadow-md transition-all">
-                  <div className="flex justify-between items-start">
-                    <div>
-                      <p className="text-sm font-medium">{s.property_address}</p>
-                      <p className="text-xs text-secondary">{s.showing_date}{s.showing_time ? ` at ${s.showing_time}` : ''}</p>
-                      {s.notes && <p className="text-xs text-secondary mt-1">{s.notes}</p>}
-                      {s.feedback && <p className="text-xs mt-1" style={{color:'#7F1330'}}>Feedback: {s.feedback}</p>}
-                    </div>
-                    <span className="text-xs px-2 py-0.5 rounded-full" style={{background: s.status === 'completed' ? '#E0F0E0' : s.status === 'cancelled' ? '#FFE0E0' : '#FFEEE3', color: s.status === 'completed' ? '#2D6A2D' : s.status === 'cancelled' ? '#B72552' : '#7F1330'}}>{s.status}</span>
-                  </div>
+              {historyTab === 'showings' && (h.showings.length === 0 ? <p className="text-secondary text-xs py-8 text-center">No showings recorded.</p> : h.showings.map(s => (
+                <div key={s.id} className="glass p-3">
+                  <p className="text-sm font-medium">{s.property_address}</p>
+                  <p className="text-xs text-secondary">{s.showing_date}{s.showing_time ? ` at ${s.showing_time}` : ''}</p>
+                  <span className="badge" style={{fontSize:10, background: s.status === 'completed' ? '#E8F9EE' : '#FFEEE3', color: s.status === 'completed' ? '#22c55e' : '#7F1330'}}>{s.status}</span>
                 </div>
               )))}
-
-              {historyTab === 'transactions' && (h.transactions.length === 0 ? <p className="text-secondary text-xs py-8 text-center">No transactions yet.</p> : h.transactions.map(t => (
-                <div key={t.id} className="glass-card p-3 cursor-pointer hover:shadow-md transition-all">
+              {historyTab === 'transactions' && (h.transactions.length === 0 ? <p className="text-secondary text-xs py-8 text-center">No transactions.</p> : h.transactions.map(t => (
+                <div key={t.id} className="glass p-3">
                   <div className="flex justify-between items-start">
                     <div>
-                      <p className="text-sm font-medium">{t.properties?.address ? `${t.properties.address}, ${t.properties.city || ''}` : 'Property TBD'}</p>
-                      <p className="text-xs text-secondary">{t.transaction_type} &middot; {t.status}</p>
-                      {t.closing_date && <p className="text-xs text-secondary">Closing: {new Date(t.closing_date).toLocaleDateString()}</p>}
+                      <p className="text-sm font-medium">{t.properties?.address_street || 'Property TBD'}{t.properties?.address_city ? ', ' + t.properties.address_city : ''}</p>
+                      <p className="text-xs text-secondary">{t.transaction_type} &middot; ${(t.contract_price || t.list_price || 0).toLocaleString()}</p>
                     </div>
-                    <span className="text-xs px-2 py-0.5 rounded-full" style={{background: t.status === 'closed' ? '#E0F0E0' : '#FFEEE3', color: t.status === 'closed' ? '#2D6A2D' : '#7F1330'}}>{t.status}</span>
+                    <span className="badge" style={{fontSize:10, background: t.status === 'closed' ? '#E8F9EE' : '#FFEEE3', color: t.status === 'closed' ? '#22c55e' : '#7F1330'}}>{t.status}</span>
                   </div>
                 </div>
               )))}
             </div>
 
+            {/* Edit modal */}
             {editingContact && (
-              <div className="fixed inset-0 bg-black/20 z-[999] flex items-center justify-center">
-                <div className="bg-white rounded-2xl p-6 sm:p-8 max-w-lg w-full mx-4 max-h-[85vh] overflow-y-auto border border-[#F0D5CC] shadow-lg">
+              <div className="fixed inset-0 bg-black/20 z-[999] flex items-center justify-center" onClick={() => setEditingContact(null)}>
+                <div className="bg-white rounded-2xl p-6 max-w-lg w-full mx-4 max-h-[85vh] overflow-y-auto border border-[#F0D5CC] shadow-lg" onClick={e => e.stopPropagation()}>
                   <h3 className="text-lg font-semibold mb-6">Edit Contact</h3>
                   <form onSubmit={(e) => { e.preventDefault(); handleUpdateContact(); }} className="space-y-4">
                     <div className="grid grid-cols-2 gap-3">
-                      <div><label className="text-xs font-medium block mb-1" style={{color:'#7A5A5A'}}>First Name</label><input type="text" value={editingContact.first_name || ''} onChange={(e) => setEditingContact({...editingContact, first_name: e.target.value})} className="input-glass w-full" /></div>
-                      <div><label className="text-xs font-medium block mb-1" style={{color:'#7A5A5A'}}>Last Name</label><input type="text" value={editingContact.last_name || ''} onChange={(e) => setEditingContact({...editingContact, last_name: e.target.value})} className="input-glass w-full" /></div>
+                      <div><label className="text-xs text-secondary mb-1 block">First Name</label><input value={editingContact.first_name || ''} onChange={e => setEditingContact({...editingContact, first_name: e.target.value})} className="input-glass w-full" /></div>
+                      <div><label className="text-xs text-secondary mb-1 block">Last Name</label><input value={editingContact.last_name || ''} onChange={e => setEditingContact({...editingContact, last_name: e.target.value})} className="input-glass w-full" /></div>
                     </div>
-                    <div><label className="text-xs font-medium block mb-1" style={{color:'#7A5A5A'}}>Email</label><input type="email" value={editingContact.email || ''} onChange={(e) => setEditingContact({...editingContact, email: e.target.value})} className="input-glass w-full" /></div>
-                    <div><label className="text-xs font-medium block mb-1" style={{color:'#7A5A5A'}}>Phone</label><input type="tel" value={editingContact.phone || ''} onChange={(e) => setEditingContact({...editingContact, phone: e.target.value})} className="input-glass w-full" /></div>
-                    <div><label className="text-xs font-medium block mb-1" style={{color:'#7A5A5A'}}>Street Address</label><input type="text" value={editingContact.address_street || ''} onChange={(e) => setEditingContact({...editingContact, address_street: e.target.value})} className="input-glass w-full" /></div>
+                    <div><label className="text-xs text-secondary mb-1 block">Email</label><input type="email" value={editingContact.email || ''} onChange={e => setEditingContact({...editingContact, email: e.target.value})} className="input-glass w-full" /></div>
+                    <div><label className="text-xs text-secondary mb-1 block">Phone</label><input value={editingContact.phone || ''} onChange={e => setEditingContact({...editingContact, phone: e.target.value})} className="input-glass w-full" /></div>
+                    <div><label className="text-xs text-secondary mb-1 block">Street Address</label><input value={editingContact.address_street || ''} onChange={e => setEditingContact({...editingContact, address_street: e.target.value})} className="input-glass w-full" /></div>
                     <div className="grid grid-cols-3 gap-3">
-                      <div><label className="text-xs font-medium block mb-1" style={{color:'#7A5A5A'}}>City</label><input type="text" value={editingContact.address_city || ''} onChange={(e) => setEditingContact({...editingContact, address_city: e.target.value})} className="input-glass w-full" /></div>
-                      <div><label className="text-xs font-medium block mb-1" style={{color:'#7A5A5A'}}>State</label><input type="text" value={editingContact.address_state || ''} onChange={(e) => setEditingContact({...editingContact, address_state: e.target.value})} className="input-glass w-full" /></div>
-                      <div><label className="text-xs font-medium block mb-1" style={{color:'#7A5A5A'}}>ZIP</label><input type="text" value={editingContact.address_zip || ''} onChange={(e) => setEditingContact({...editingContact, address_zip: e.target.value})} className="input-glass w-full" /></div>
+                      <div><label className="text-xs text-secondary mb-1 block">City</label><input value={editingContact.address_city || ''} onChange={e => setEditingContact({...editingContact, address_city: e.target.value})} className="input-glass w-full" /></div>
+                      <div><label className="text-xs text-secondary mb-1 block">State</label><input value={editingContact.address_state || ''} onChange={e => setEditingContact({...editingContact, address_state: e.target.value})} className="input-glass w-full" /></div>
+                      <div><label className="text-xs text-secondary mb-1 block">ZIP</label><input value={editingContact.address_zip || ''} onChange={e => setEditingContact({...editingContact, address_zip: e.target.value})} className="input-glass w-full" /></div>
                     </div>
-                    <div><label className="text-xs font-medium block mb-1" style={{color:'#7A5A5A'}}>Type</label>
-                      <select value={editingContact.contact_type || 'client'} onChange={(e) => setEditingContact({...editingContact, contact_type: e.target.value})} className="input-glass w-full">
-                        {['client','vendor','contractor'].map(t => <option key={t} value={t}>{t.charAt(0).toUpperCase()+t.slice(1)}</option>)}
-                      </select>
-                    </div>
-                    {['vendor','contractor'].includes(editingContact.contact_type) && (
-                      <div><label className="text-xs font-medium block mb-1" style={{color:'#7A5A5A'}}>Company Name</label><input type="text" value={editingContact.company_name || ''} onChange={(e) => setEditingContact({...editingContact, company_name: e.target.value})} className="input-glass w-full" placeholder="e.g. ABC Plumbing" /></div>
-                    )}
                     <div className="grid grid-cols-2 gap-3">
-                      <div><label className="text-xs font-medium block mb-1" style={{color:'#7A5A5A'}}>Preferred Channel</label>
-                        <select value={editingContact.preferred_channel || 'email'} onChange={(e) => setEditingContact({...editingContact, preferred_channel: e.target.value})} className="input-glass w-full">
-                          {['email','sms','call','in_person'].map(t => <option key={t} value={t}>{t.replace(/_/g,' ').replace(/\b\w/g, l => l.toUpperCase())}</option>)}
+                      <div><label className="text-xs text-secondary mb-1 block">Type</label>
+                        <select value={editingContact.contact_type || 'client'} onChange={e => setEditingContact({...editingContact, contact_type: e.target.value})} className="input-glass w-full">
+                          {['lead','client','past_client','sphere','referral_partner','vendor','contractor'].map(t => <option key={t} value={t}>{t.replace(/_/g,' ')}</option>)}
                         </select>
                       </div>
-                      <div><label className="text-xs font-medium block mb-1" style={{color:'#7A5A5A'}}>Sphere Tier</label>
-                        <select value={editingContact.sphere_tier || 'standard'} onChange={(e) => setEditingContact({...editingContact, sphere_tier: e.target.value})} className="input-glass w-full">
-                          <option value="vip">VIP</option>
-                          <option value="standard">Standard</option>
-                          <option value="casual">Casual</option>
+                      <div><label className="text-xs text-secondary mb-1 block">Preferred Channel</label>
+                        <select value={editingContact.preferred_channel || 'email'} onChange={e => setEditingContact({...editingContact, preferred_channel: e.target.value})} className="input-glass w-full">
+                          {['email','sms','call','in_person'].map(t => <option key={t} value={t}>{t.replace(/_/g,' ')}</option>)}
                         </select>
                       </div>
                     </div>
                     <div className="grid grid-cols-2 gap-3">
-                      <div><label className="text-xs font-medium block mb-1" style={{color:'#7A5A5A'}}>Birthday</label><input type="date" value={editingContact.birthday || ''} onChange={(e) => setEditingContact({...editingContact, birthday: e.target.value})} className="input-glass w-full" /></div>
-                      <div><label className="text-xs font-medium block mb-1" style={{color:'#7A5A5A'}}>Anniversary</label><input type="date" value={editingContact.anniversary || ''} onChange={(e) => setEditingContact({...editingContact, anniversary: e.target.value})} className="input-glass w-full" /></div>
+                      <div><label className="text-xs text-secondary mb-1 block">Birthday</label><input type="date" value={editingContact.birthday || ''} onChange={e => setEditingContact({...editingContact, birthday: e.target.value})} className="input-glass w-full" /></div>
+                      <div><label className="text-xs text-secondary mb-1 block">Anniversary</label><input type="date" value={editingContact.anniversary || ''} onChange={e => setEditingContact({...editingContact, anniversary: e.target.value})} className="input-glass w-full" /></div>
                     </div>
-                    <div className="flex gap-3 pt-4">
+                    <div className="flex gap-3 pt-2">
                       <button type="button" onClick={() => setEditingContact(null)} className="btn-secondary flex-1">Cancel</button>
                       <button type="submit" className="btn-primary flex-1">Save</button>
                     </div>
@@ -2137,7 +1628,7 @@
         );
       }
 
-      // CLIENTS LIST VIEW
+      // ---- CONTACTS LIST VIEW ----
       return (
         <div className="flex-1 flex flex-col p-3 sm:p-6 overflow-hidden min-h-0">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
@@ -2149,103 +1640,93 @@
           </div>
 
           <div className="flex flex-col sm:flex-row gap-2 mb-4">
-            <input type="text" placeholder="Search name, email, phone..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} className="input-glass flex-1" />
+            <input type="text" placeholder="Search name, email, phone..." value={searchTerm} onChange={e => setSearchTerm(e.target.value)} className="input-glass flex-1" />
             <div className="flex gap-1 flex-wrap">
-              {[['all','All'],['client','Clients'],['vendor','Vendors'],['contractor','Contractors']].map(([val,label]) => (
+              {[['all','All'],['pipeline','Pipeline'],['client','Clients'],['vendor','Vendors']].map(([val,label]) => (
                 <button key={val} onClick={() => setFilterType(val)} className="text-xs px-3 py-1.5 rounded-full transition-all" style={filterType === val ? {background:'#7F1330', color:'#fff'} : {background:'#FFEEE3', color:'#7A5A5A'}}>{label} ({typeCounts[val] || 0})</button>
               ))}
             </div>
           </div>
 
+          {/* Add contact form */}
           {showAddForm && (
-            <div className="fixed inset-0 bg-black/20 z-[999] flex items-center justify-center">
-              <div className="bg-white rounded-2xl p-6 sm:p-8 max-w-lg w-full mx-4 max-h-[85vh] overflow-y-auto border border-[#F0D5CC] shadow-lg">
-                <h3 className="text-lg font-semibold mb-6">Add Contact</h3>
+            <div className="fixed inset-0 bg-black/20 z-[999] flex items-center justify-center" onClick={() => setShowAddForm(false)}>
+              <div className="bg-white rounded-2xl p-6 max-w-lg w-full mx-4 max-h-[85vh] overflow-y-auto border border-[#F0D5CC] shadow-lg" onClick={e => e.stopPropagation()}>
+                <h3 className="text-lg font-semibold mb-5">Add Contact</h3>
                 <form onSubmit={handleAddContact} className="space-y-4">
                   <div className="grid grid-cols-2 gap-3">
-                    <div><label className="text-xs font-medium block mb-1" style={{color:'#7A5A5A'}}>First Name</label><input type="text" value={formData.first_name} onChange={(e) => setFormData({...formData, first_name: e.target.value})} className="input-glass w-full" required /></div>
-                    <div><label className="text-xs font-medium block mb-1" style={{color:'#7A5A5A'}}>Last Name</label><input type="text" value={formData.last_name} onChange={(e) => setFormData({...formData, last_name: e.target.value})} className="input-glass w-full" required /></div>
+                    <div><label className="text-xs text-secondary mb-1 block">First Name</label><input value={formData.first_name} onChange={e => setFormData({...formData, first_name: e.target.value})} className="input-glass w-full" required /></div>
+                    <div><label className="text-xs text-secondary mb-1 block">Last Name</label><input value={formData.last_name} onChange={e => setFormData({...formData, last_name: e.target.value})} className="input-glass w-full" required /></div>
                   </div>
-                  <div><label className="text-xs font-medium block mb-1" style={{color:'#7A5A5A'}}>Email</label><input type="email" value={formData.email} onChange={(e) => setFormData({...formData, email: e.target.value})} className="input-glass w-full" /></div>
-                  <div><label className="text-xs font-medium block mb-1" style={{color:'#7A5A5A'}}>Phone</label><input type="tel" value={formData.phone} onChange={(e) => setFormData({...formData, phone: e.target.value})} className="input-glass w-full" /></div>
-                  <div><label className="text-xs font-medium block mb-1" style={{color:'#7A5A5A'}}>Street Address</label><input type="text" value={formData.address_street} onChange={(e) => setFormData({...formData, address_street: e.target.value})} className="input-glass w-full" /></div>
+                  <div><label className="text-xs text-secondary mb-1 block">Email</label><input type="email" value={formData.email} onChange={e => setFormData({...formData, email: e.target.value})} className="input-glass w-full" /></div>
+                  <div><label className="text-xs text-secondary mb-1 block">Phone</label><input value={formData.phone} onChange={e => setFormData({...formData, phone: e.target.value})} className="input-glass w-full" /></div>
+                  <div><label className="text-xs text-secondary mb-1 block">Address</label><input value={formData.address_street} onChange={e => setFormData({...formData, address_street: e.target.value})} className="input-glass w-full" /></div>
                   <div className="grid grid-cols-3 gap-3">
-                    <div><label className="text-xs font-medium block mb-1" style={{color:'#7A5A5A'}}>City</label><input type="text" value={formData.address_city} onChange={(e) => setFormData({...formData, address_city: e.target.value})} className="input-glass w-full" /></div>
-                    <div><label className="text-xs font-medium block mb-1" style={{color:'#7A5A5A'}}>State</label><input type="text" value={formData.address_state} onChange={(e) => setFormData({...formData, address_state: e.target.value})} className="input-glass w-full" /></div>
-                    <div><label className="text-xs font-medium block mb-1" style={{color:'#7A5A5A'}}>ZIP</label><input type="text" value={formData.address_zip} onChange={(e) => setFormData({...formData, address_zip: e.target.value})} className="input-glass w-full" /></div>
+                    <input className="input-glass" placeholder="City" value={formData.address_city} onChange={e => setFormData({...formData, address_city: e.target.value})} />
+                    <input className="input-glass" placeholder="State" value={formData.address_state} onChange={e => setFormData({...formData, address_state: e.target.value})} />
+                    <input className="input-glass" placeholder="ZIP" value={formData.address_zip} onChange={e => setFormData({...formData, address_zip: e.target.value})} />
                   </div>
-                  <div><label className="text-xs font-medium block mb-1" style={{color:'#7A5A5A'}}>Type</label>
-                    <select value={formData.contact_type} onChange={(e) => setFormData({...formData, contact_type: e.target.value})} className="input-glass w-full">
-                      {['client','vendor','contractor'].map(t => <option key={t} value={t}>{t.charAt(0).toUpperCase()+t.slice(1)}</option>)}
-                    </select>
+
+                  {/* Add to pipeline option */}
+                  <div className="glass p-3" style={{background:'#FFF5F0'}}>
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input type="checkbox" className="checkbox-glass" checked={formData.add_to_pipeline} onChange={e => setFormData({...formData, add_to_pipeline: e.target.checked})} />
+                      <span className="text-sm font-medium">Add to pipeline</span>
+                    </label>
+                    {formData.add_to_pipeline && (
+                      <div className="grid grid-cols-2 gap-2 mt-3">
+                        <div><label className="text-xs text-secondary mb-1 block">Stage</label>
+                          <select value={formData.pipeline_stage_id} onChange={e => setFormData({...formData, pipeline_stage_id: e.target.value})} className="input-glass w-full text-xs">
+                            <option value="">Select stage...</option>
+                            {stages.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                          </select>
+                        </div>
+                        <div><label className="text-xs text-secondary mb-1 block">Type</label>
+                          <select value={formData.lead_type} onChange={e => setFormData({...formData, lead_type: e.target.value})} className="input-glass w-full text-xs">
+                            <option value="buyer">Buyer</option><option value="seller">Seller</option><option value="both">Both</option><option value="investor">Investor</option>
+                          </select>
+                        </div>
+                      </div>
+                    )}
                   </div>
-                  {['vendor','contractor'].includes(formData.contact_type) && (
-                    <div><label className="text-xs font-medium block mb-1" style={{color:'#7A5A5A'}}>Company Name</label><input type="text" value={formData.company_name || ''} onChange={(e) => setFormData({...formData, company_name: e.target.value})} className="input-glass w-full" placeholder="e.g. ABC Plumbing" /></div>
-                  )}
-                  <div className="flex gap-3 pt-4">
+
+                  <div className="flex gap-3 pt-2">
                     <button type="button" onClick={() => setShowAddForm(false)} className="btn-secondary flex-1">Cancel</button>
-                    <button type="submit" className="btn-primary flex-1">Add</button>
+                    <button type="submit" className="btn-primary flex-1">Add Contact</button>
                   </div>
                 </form>
               </div>
             </div>
           )}
 
+          {/* Contact list */}
           <div className="flex-1 overflow-y-auto">
-            <div className="grid grid-cols-1 gap-3">
+            <div className="grid grid-cols-1 gap-2">
               {filtered.map(contact => {
-                const addr = formatAddress(contact);
+                const inPipeline = contact.pipeline_stage_id && !contact.pipeline_archived;
                 return (
-                  <div key={contact.id} className="glass-hover p-4 cursor-pointer transition-all hover:shadow-md" onClick={() => openContactDetail(contact)}>
-                    <div className="flex items-start gap-3">
+                  <div key={contact.id} className="glass-hover p-3 cursor-pointer" onClick={() => openContactDetail(contact)}>
+                    <div className="flex items-center gap-3">
                       <div className="w-10 h-10 rounded-full flex items-center justify-center text-white font-semibold text-sm flex-shrink-0" style={{background: 'linear-gradient(135deg, #7F1330, #B72552)'}}>
                         {(contact.first_name?.[0] || '')}{(contact.last_name?.[0] || '')}
                       </div>
                       <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2 mb-1">
+                        <div className="flex items-center gap-2 mb-0.5">
                           <p className="font-semibold text-sm">{contact.first_name} {contact.last_name}</p>
-                          <span className="text-xs px-1.5 py-0.5 rounded-full text-white" style={{background: typeColor(contact.contact_type), fontSize:'10px'}}>{getCategory(contact.contact_type)}</span>
-                        </div>
-                        {contact.company_name && ['vendor','contractor'].includes(getCategory(contact.contact_type)) && (
-                          <p className="text-xs text-secondary mb-0.5" style={{fontStyle:'italic'}}>{contact.company_name}</p>
-                        )}
-                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-0.5">
-                          <div className="flex items-center gap-1.5">
-                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#7A5A5A" strokeWidth="2"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"></path><polyline points="22,6 12,13 2,6"></polyline></svg>
-                            <p className="text-xs text-secondary truncate">{contact.email || 'No email'}</p>
-                          </div>
-                          <div className="flex items-center gap-1.5">
-                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#7A5A5A" strokeWidth="2"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"></path></svg>
-                            <p className="text-xs text-secondary">{contact.phone || 'No phone'}</p>
-                          </div>
-                          {addr && (
-                            <div className="flex items-center gap-1.5 sm:col-span-2">
-                              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#7A5A5A" strokeWidth="2"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"></path><circle cx="12" cy="10" r="3"></circle></svg>
-                              <p className="text-xs text-secondary truncate">{addr}</p>
-                            </div>
+                          <span className="text-xs px-1.5 py-0.5 rounded-full text-white" style={{background: typeColor(contact.contact_type), fontSize:10}}>{contact.contact_type}</span>
+                          {inPipeline && (
+                            <span className="text-xs px-1.5 py-0.5 rounded-full" style={{background: (contact.pipeline_stages?.color || '#8b5cf6') + '20', color: contact.pipeline_stages?.color || '#8b5cf6', fontSize:10}}>
+                              {contact.pipeline_stages?.name}
+                            </span>
+                          )}
+                          {contact.temperature && inPipeline && (
+                            <span className="text-xs" style={{color: contact.temperature === 'hot' ? '#ef4444' : contact.temperature === 'warm' ? '#f59e0b' : '#6b7280', fontSize:10}}>{contact.temperature}</span>
                           )}
                         </div>
-                      </div>
-                      <div className="flex gap-1.5 flex-shrink-0" onClick={(e) => e.stopPropagation()}>
-                        {['vendor','contractor'].includes(getCategory(contact.contact_type)) && (
-                          <button onClick={() => {
-                            const parts = [];
-                            if (contact.company_name) parts.push(contact.company_name);
-                            parts.push(`${contact.first_name} ${contact.last_name}`);
-                            if (contact.phone) parts.push(contact.phone);
-                            if (contact.email) parts.push(contact.email);
-                            navigator.clipboard.writeText(parts.join('\n'));
-                            alert('Contact info copied!');
-                          }} className="p-1.5 rounded-lg hover:bg-gray-100" title="Copy info to share">
-                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#003744" strokeWidth="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
-                          </button>
-                        )}
-                        <button onClick={() => setEditingContact(contact)} className="p-1.5 rounded-lg hover:bg-gray-100" title="Edit">
-                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#7A5A5A" strokeWidth="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path></svg>
-                        </button>
-                        <button onClick={() => handleDeleteContact(contact.id)} className="p-1.5 rounded-lg hover:bg-gray-100" title="Delete">
-                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#B72552" strokeWidth="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
-                        </button>
+                        <div className="flex items-center gap-3 text-xs text-secondary">
+                          {contact.email && <span>{contact.email}</span>}
+                          {contact.phone && <span>{contact.phone}</span>}
+                        </div>
                       </div>
                     </div>
                   </div>
@@ -2254,32 +1735,19 @@
             </div>
           </div>
 
-          {editingContact && (
-            <div className="fixed inset-0 bg-black/20 z-[999] flex items-center justify-center">
-              <div className="bg-white rounded-2xl p-6 sm:p-8 max-w-lg w-full mx-4 max-h-[85vh] overflow-y-auto border border-[#F0D5CC] shadow-lg">
+          {/* Edit modal (from list) */}
+          {editingContact && !selectedContact && (
+            <div className="fixed inset-0 bg-black/20 z-[999] flex items-center justify-center" onClick={() => setEditingContact(null)}>
+              <div className="bg-white rounded-2xl p-6 max-w-lg w-full mx-4 max-h-[85vh] overflow-y-auto border border-[#F0D5CC] shadow-lg" onClick={e => e.stopPropagation()}>
                 <h3 className="text-lg font-semibold mb-6">Edit Contact</h3>
                 <form onSubmit={(e) => { e.preventDefault(); handleUpdateContact(); }} className="space-y-4">
                   <div className="grid grid-cols-2 gap-3">
-                    <div><label className="text-xs font-medium block mb-1" style={{color:'#7A5A5A'}}>First Name</label><input type="text" value={editingContact.first_name || ''} onChange={(e) => setEditingContact({...editingContact, first_name: e.target.value})} className="input-glass w-full" /></div>
-                    <div><label className="text-xs font-medium block mb-1" style={{color:'#7A5A5A'}}>Last Name</label><input type="text" value={editingContact.last_name || ''} onChange={(e) => setEditingContact({...editingContact, last_name: e.target.value})} className="input-glass w-full" /></div>
+                    <div><label className="text-xs text-secondary mb-1 block">First Name</label><input value={editingContact.first_name || ''} onChange={e => setEditingContact({...editingContact, first_name: e.target.value})} className="input-glass w-full" /></div>
+                    <div><label className="text-xs text-secondary mb-1 block">Last Name</label><input value={editingContact.last_name || ''} onChange={e => setEditingContact({...editingContact, last_name: e.target.value})} className="input-glass w-full" /></div>
                   </div>
-                  <div><label className="text-xs font-medium block mb-1" style={{color:'#7A5A5A'}}>Email</label><input type="email" value={editingContact.email || ''} onChange={(e) => setEditingContact({...editingContact, email: e.target.value})} className="input-glass w-full" /></div>
-                  <div><label className="text-xs font-medium block mb-1" style={{color:'#7A5A5A'}}>Phone</label><input type="tel" value={editingContact.phone || ''} onChange={(e) => setEditingContact({...editingContact, phone: e.target.value})} className="input-glass w-full" /></div>
-                  <div><label className="text-xs font-medium block mb-1" style={{color:'#7A5A5A'}}>Street Address</label><input type="text" value={editingContact.address_street || ''} onChange={(e) => setEditingContact({...editingContact, address_street: e.target.value})} className="input-glass w-full" /></div>
-                  <div className="grid grid-cols-3 gap-3">
-                    <div><label className="text-xs font-medium block mb-1" style={{color:'#7A5A5A'}}>City</label><input type="text" value={editingContact.address_city || ''} onChange={(e) => setEditingContact({...editingContact, address_city: e.target.value})} className="input-glass w-full" /></div>
-                    <div><label className="text-xs font-medium block mb-1" style={{color:'#7A5A5A'}}>State</label><input type="text" value={editingContact.address_state || ''} onChange={(e) => setEditingContact({...editingContact, address_state: e.target.value})} className="input-glass w-full" /></div>
-                    <div><label className="text-xs font-medium block mb-1" style={{color:'#7A5A5A'}}>ZIP</label><input type="text" value={editingContact.address_zip || ''} onChange={(e) => setEditingContact({...editingContact, address_zip: e.target.value})} className="input-glass w-full" /></div>
-                  </div>
-                  <div><label className="text-xs font-medium block mb-1" style={{color:'#7A5A5A'}}>Type</label>
-                    <select value={editingContact.contact_type || 'client'} onChange={(e) => setEditingContact({...editingContact, contact_type: e.target.value})} className="input-glass w-full">
-                      {['client','vendor','contractor'].map(t => <option key={t} value={t}>{t.charAt(0).toUpperCase()+t.slice(1)}</option>)}
-                    </select>
-                  </div>
-                  {['vendor','contractor'].includes(editingContact.contact_type) && (
-                    <div><label className="text-xs font-medium block mb-1" style={{color:'#7A5A5A'}}>Company Name</label><input type="text" value={editingContact.company_name || ''} onChange={(e) => setEditingContact({...editingContact, company_name: e.target.value})} className="input-glass w-full" placeholder="e.g. ABC Plumbing" /></div>
-                  )}
-                  <div className="flex gap-3 pt-4">
+                  <div><label className="text-xs text-secondary mb-1 block">Email</label><input type="email" value={editingContact.email || ''} onChange={e => setEditingContact({...editingContact, email: e.target.value})} className="input-glass w-full" /></div>
+                  <div><label className="text-xs text-secondary mb-1 block">Phone</label><input value={editingContact.phone || ''} onChange={e => setEditingContact({...editingContact, phone: e.target.value})} className="input-glass w-full" /></div>
+                  <div className="flex gap-3 pt-2">
                     <button type="button" onClick={() => setEditingContact(null)} className="btn-secondary flex-1">Cancel</button>
                     <button type="submit" className="btn-primary flex-1">Save</button>
                   </div>
