@@ -4136,7 +4136,21 @@
                   </div>
                 ) : (
                   <div className="space-y-3">
-                    {outreach.map(o => (
+                    {outreach.map(o => {
+                      const [editing, setEditing] = React.useState(false);
+                      const [editSubject, setEditSubject] = React.useState(o.subject);
+                      const [editBody, setEditBody] = React.useState(o.body);
+                      const [saving, setSaving] = React.useState(false);
+
+                      const saveEdits = async () => {
+                        setSaving(true);
+                        await supabase.from('prospect_outreach').update({ subject: editSubject, body: editBody, updated_at: new Date().toISOString() }).eq('id', o.id);
+                        setSaving(false);
+                        setEditing(false);
+                        fetchOutreach();
+                      };
+
+                      return (
                       <div key={o.id} className="glass p-4">
                         <div className="flex items-start justify-between mb-2">
                           <div>
@@ -4154,10 +4168,33 @@
                             <span className="font-medium">Data check flagged:</span> {o.validation_issues.join(' | ')}
                           </div>
                         )}
+
+                        {/* Editable email content */}
                         <div className="bg-[#FFF5F0] rounded-lg p-3 mb-3">
-                          <p className="text-xs font-medium mb-1">Subject: {o.subject}</p>
-                          <p className="text-xs text-secondary whitespace-pre-wrap mt-2">{o.body}</p>
+                          {editing ? (
+                            <div className="space-y-2">
+                              <div>
+                                <label className="text-xs text-secondary mb-1 block">Subject</label>
+                                <input className="input-glass w-full text-sm" value={editSubject} onChange={e => setEditSubject(e.target.value)} />
+                              </div>
+                              <div>
+                                <label className="text-xs text-secondary mb-1 block">Body</label>
+                                <textarea className="input-glass w-full text-sm" rows={8} value={editBody} onChange={e => setEditBody(e.target.value)} style={{lineHeight:'1.6'}} />
+                              </div>
+                              <div className="flex gap-2">
+                                <button onClick={saveEdits} disabled={saving} className="btn-primary text-xs">{saving ? 'Saving...' : 'Save Changes'}</button>
+                                <button onClick={() => { setEditing(false); setEditSubject(o.subject); setEditBody(o.body); }} className="btn-secondary text-xs">Cancel</button>
+                              </div>
+                            </div>
+                          ) : (
+                            <div onClick={() => { if (o.status === 'draft') setEditing(true); }} className={o.status === 'draft' ? 'cursor-pointer' : ''}>
+                              <p className="text-xs font-medium mb-1">Subject: {o.subject}</p>
+                              <p className="text-xs text-secondary whitespace-pre-wrap mt-2">{o.body}</p>
+                              {o.status === 'draft' && <p className="text-xs mt-2" style={{color:'#7F1330', fontStyle:'italic'}}>Click to edit</p>}
+                            </div>
+                          )}
                         </div>
+
                         {o.comps_provided?.length > 0 && (
                           <div className="mb-2">
                             <p className="text-xs text-secondary font-medium mb-1">Comps provided ({o.comps_provided.length}):</p>
@@ -4174,7 +4211,7 @@
                             {o.status === 'draft' && (
                               <>
                                 <button onClick={() => sendOutreach(o)} className="btn-primary text-xs">Send</button>
-                                <button onClick={(e) => generateAndDownloadBPO(o.prospect_id, e.target)} className="btn-secondary text-xs">Generate BPO</button>
+                                <button onClick={(e) => generateAndDownloadBPO(o.prospect_id, e.target)} className="btn-secondary text-xs">BPO PDF</button>
                                 <button onClick={() => regenerateOutreach(o.id)} className="btn-secondary text-xs">Regenerate</button>
                                 <button onClick={() => rejectOutreach(o.id)} className="btn-secondary text-xs">Discard</button>
                               </>
@@ -4185,7 +4222,8 @@
                           </div>
                         </div>
                       </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 )}
               </div>
