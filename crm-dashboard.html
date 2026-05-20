@@ -3356,27 +3356,56 @@
         });
         const data = await res.json();
         if (!data.success || !data.bpo) { alert('BPO generation failed: ' + (data.error || 'Unknown')); return; }
-
-        // Render HTML
         const container = document.createElement('div');
         container.innerHTML = renderBPOHtml(data.bpo);
         container.style.position = 'fixed';
         container.style.left = '-9999px';
         document.body.appendChild(container);
-
-        // Generate PDF
         const element = container.querySelector('#bpo-render');
-        await html2pdf().set({
-          margin: 0,
-          filename: 'BPO-' + data.bpo.prospect.address.replace(/[^a-zA-Z0-9]/g, '-') + '.pdf',
-          image: { type: 'jpeg', quality: 0.98 },
-          html2canvas: { scale: 2, useCORS: true, letterRendering: true },
-          jsPDF: { unit: 'pt', format: 'letter', orientation: 'portrait' }
-        }).from(element).save();
-
+        await html2pdf().set({ margin: 0, filename: 'BPO-' + data.bpo.prospect.address.replace(/[^a-zA-Z0-9]/g, '-') + '.pdf', image: { type: 'jpeg', quality: 0.98 }, html2canvas: { scale: 2, useCORS: true, letterRendering: true }, jsPDF: { unit: 'pt', format: 'letter', orientation: 'portrait' } }).from(element).save();
         document.body.removeChild(container);
       } catch (err) { alert('Error: ' + err.message); }
       if (buttonEl) { buttonEl.disabled = false; buttonEl.textContent = 'Generate BPO'; }
+    }
+
+    // Generate BPO + store as base64 on outreach record for email attachment
+    async function generateBPOForOutreach(prospectId, outreachId, buttonEl, onComplete) {
+      if (buttonEl) { buttonEl.disabled = true; buttonEl.textContent = 'Generating BPO...'; }
+      try {
+        const res = await fetch(SUPABASE_URL + '/functions/v1/generate-bpo', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'apikey': SUPABASE_ANON_KEY },
+          body: JSON.stringify({ prospect_id: prospectId })
+        });
+        const data = await res.json();
+        if (!data.success || !data.bpo) { alert('BPO generation failed: ' + (data.error || 'Unknown')); return; }
+        const container = document.createElement('div');
+        container.innerHTML = renderBPOHtml(data.bpo);
+        container.style.position = 'fixed';
+        container.style.left = '-9999px';
+        document.body.appendChild(container);
+        const element = container.querySelector('#bpo-render');
+        // Generate as base64 blob instead of saving
+        const pdfBlob = await html2pdf().set({ margin: 0, image: { type: 'jpeg', quality: 0.98 }, html2canvas: { scale: 2, useCORS: true, letterRendering: true }, jsPDF: { unit: 'pt', format: 'letter', orientation: 'portrait' } }).from(element).outputPdf('blob');
+        document.body.removeChild(container);
+        // Convert blob to base64
+        const reader = new FileReader();
+        reader.onload = async () => {
+          const base64 = reader.result.split(',')[1]; // strip data:application/pdf;base64,
+          // Store on outreach record
+          await supabase.from('prospect_outreach').update({
+            bpo_pdf_base64: base64,
+            bpo_generated_at: new Date().toISOString(),
+            bpo_data: data.bpo
+          }).eq('id', outreachId);
+          if (buttonEl) { buttonEl.disabled = false; buttonEl.textContent = 'BPO Attached'; buttonEl.style.background = '#E8F9EE'; buttonEl.style.color = '#16a34a'; buttonEl.style.border = '1px solid #16a34a'; }
+          if (onComplete) onComplete();
+        };
+        reader.readAsDataURL(pdfBlob);
+      } catch (err) {
+        alert('Error: ' + err.message);
+        if (buttonEl) { buttonEl.disabled = false; buttonEl.textContent = 'Attach BPO'; }
+      }
     }
 
     // PROSPECTING AGENT MODULE
@@ -3450,7 +3479,7 @@
 
       const fetchOutreach = async () => {
         if (!selectedCampaign) return;
-        let query = supabase.from('prospect_outreach').select('*, prospects(id, property_address, property_city, property_zip, owner_name, owner_email, owner_phone, our_valuation, estimated_value, status)').eq('campaign_id', selectedCampaign.id);
+        let query = supabase.from('prospect_outreach').select('id, prospect_id, campaign_id, channel, sequence_number, subject, body, status, approved_at, sent_at, opened_at, replied_at, reply_body, reply_sentiment, validated, validation_issues, comps_provided, bpo_generated_at, created_at, updated_at, prospects(id, property_address, property_city, property_zip, owner_name, owner_email, owner_phone, our_valuation, estimated_value, status)').eq('campaign_id', selectedCampaign.id);
         if (view === 'queue') query = query.in('status', ['draft', 'approved']);
         else if (view === 'sent') query = query.in('status', ['sent', 'opened']);
         else if (view === 'replied') query = query.in('status', ['replied']);
@@ -3687,12 +3716,28 @@
         if (!window.__amyCRM?.gmailConnected) { alert('Connect Gmail first to send emails.'); return; }
         const toEmail = item.prospects?.owner_email;
         if (!toEmail) { alert('No email address for this owner.'); return; }
-        if (!confirm('Send email to ' + toEmail + '?')) return;
+        // Check if BPO is attached — fetch fresh data
+        const { data: freshItem } = await supabase.from('prospect_outreach').select('bpo_pdf_base64, bpo_generated_at, subject, body').eq('id', item.id).single();
+        const hasBPO = freshItem?.bpo_pdf_base64;
+        const confirmMsg = hasBPO ? 'Send email with BPO attachment to ' + toEmail + '?' : 'Send email to ' + toEmail + '?';
+        if (!confirm(confirmMsg)) return;
         try {
+          const payload = {
+            action: hasBPO ? 'send_email_with_attachment' : 'send_email',
+            user_id: window.__amyCRM.userId,
+            to: toEmail,
+            subject: freshItem?.subject || item.subject,
+            email_body: freshItem?.body || item.body,
+          };
+          if (hasBPO) {
+            payload.attachment_base64 = freshItem.bpo_pdf_base64;
+            payload.attachment_filename = 'Residential-Value-Review-' + (item.prospects?.property_address || 'Property').replace(/[^a-zA-Z0-9]/g, '-') + '.pdf';
+            payload.attachment_mime = 'application/pdf';
+          }
           const res = await fetch(SUPABASE_URL + '/functions/v1/gmail', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'apikey': SUPABASE_ANON_KEY },
-            body: JSON.stringify({ action: 'send_email', user_id: window.__amyCRM.userId, to: toEmail, subject: item.subject, email_body: item.body })
+            body: JSON.stringify(payload)
           });
           const data = await res.json();
           if (data.success) {
@@ -4210,8 +4255,8 @@
                           <div className="flex gap-2">
                             {o.status === 'draft' && (
                               <>
-                                <button onClick={() => sendOutreach(o)} className="btn-primary text-xs">Send</button>
-                                <button onClick={(e) => generateAndDownloadBPO(o.prospect_id, e.target)} className="btn-secondary text-xs">BPO PDF</button>
+                                <button onClick={() => sendOutreach(o)} className="btn-primary text-xs">{o.bpo_generated_at ? 'Send + BPO' : 'Send'}</button>
+                                <button onClick={(e) => generateBPOForOutreach(o.prospect_id, o.id, e.target, fetchOutreach)} className="btn-secondary text-xs" style={o.bpo_generated_at ? {background:'#E8F9EE', color:'#16a34a', border:'1px solid #16a34a'} : {}}>{o.bpo_generated_at ? 'BPO Attached' : 'Attach BPO'}</button>
                                 <button onClick={() => regenerateOutreach(o.id)} className="btn-secondary text-xs">Regenerate</button>
                                 <button onClick={() => rejectOutreach(o.id)} className="btn-secondary text-xs">Discard</button>
                               </>
