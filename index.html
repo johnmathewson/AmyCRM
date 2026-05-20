@@ -1069,27 +1069,43 @@
           </div>
 
           {/* ADD TRANSACTION MODAL */}
-          {showAddForm && (
+          {showAddForm && (() => {
+            const [showMore, setShowMore] = React.useState(false);
+            const [quickName, setQuickName] = React.useState('');
+            const nameMatches = quickName.length >= 2 ? contacts.filter(c => `${c.first_name} ${c.last_name}`.toLowerCase().includes(quickName.toLowerCase())).slice(0, 5) : [];
+            return (
             <div className="fixed inset-0 bg-black/20 z-[999] flex items-center justify-center" onClick={() => setShowAddForm(false)}>
-              <div className="bg-white rounded-2xl p-6 max-w-2xl w-full mx-4 max-h-[90vh] overflow-y-auto border border-[#F0D5CC] shadow-lg" onClick={e => e.stopPropagation()}>
-                <h3 className="text-lg font-semibold mb-5">New Transaction</h3>
+              <div className="bg-white rounded-2xl p-6 max-w-lg w-full mx-4 max-h-[90vh] overflow-y-auto border border-[#F0D5CC] shadow-lg" onClick={e => e.stopPropagation()}>
+                <h3 className="text-lg font-semibold mb-4">Start a Transaction</h3>
+                <p className="text-xs text-secondary mb-4">Just need a name and address to get started. Add details anytime.</p>
                 <form onSubmit={handleAddTransaction} className="space-y-4">
 
-                  {/* Client selection */}
+                  {/* Client — search or auto-create */}
                   <div>
-                    <label className="text-sm text-secondary mb-2 block">Client</label>
+                    <label className="text-sm text-secondary mb-1 block">Client Name</label>
                     {!formData.contact_id ? (
                       <div>
-                        <input className="input-glass w-full mb-2" placeholder="Search contacts by name..." value={contactSearch} onChange={e => setContactSearch(e.target.value)} />
-                        <div className="max-h-32 overflow-y-auto border border-[#F0D5CC] rounded-lg">
-                          {filteredContacts.slice(0, 8).map(c => (
-                            <div key={c.id} onClick={() => { setFormData({...formData, contact_id: c.id}); setContactSearch(''); }} className="px-3 py-2 hover:bg-[#FFF5F0] cursor-pointer text-sm border-b border-[#F0D5CC]/30">
-                              <span className="font-medium">{c.first_name} {c.last_name}</span>
-                              {c.email && <span className="text-secondary ml-2">{c.email}</span>}
-                            </div>
-                          ))}
-                        </div>
-                        <button type="button" onClick={() => setShowNewContact(true)} className="text-xs mt-2" style={{color:'#7F1330'}}>+ Create New Client</button>
+                        <input className="input-glass w-full" placeholder="Type a name..." value={quickName} onChange={e => { setQuickName(e.target.value); setContactSearch(e.target.value); }} />
+                        {quickName.length >= 2 && (
+                          <div className="border border-[#F0D5CC] rounded-lg mt-1 max-h-36 overflow-y-auto">
+                            {nameMatches.map(c => (
+                              <div key={c.id} onClick={() => { setFormData({...formData, contact_id: c.id}); setQuickName(c.first_name + ' ' + c.last_name); }} className="px-3 py-2 hover:bg-[#FFF5F0] cursor-pointer text-sm border-b border-[#F0D5CC]/30">
+                                <span className="font-medium">{c.first_name} {c.last_name}</span>
+                                {c.email && <span className="text-secondary ml-2 text-xs">{c.email}</span>}
+                              </div>
+                            ))}
+                            {nameMatches.length === 0 && quickName.includes(' ') && (
+                              <div onClick={() => {
+                                const parts = quickName.trim().split(/\s+/);
+                                const first = parts[0]; const last = parts.slice(1).join(' ') || '';
+                                setNewContact({first_name: first, last_name: last, email: '', phone: ''});
+                                setShowNewContact(true);
+                              }} className="px-3 py-2 hover:bg-[#FFF5F0] cursor-pointer text-sm" style={{color:'#7F1330'}}>
+                                + Create "{quickName}" as new contact
+                              </div>
+                            )}
+                          </div>
+                        )}
                         {showNewContact && (
                           <div className="glass p-3 mt-2 space-y-2">
                             <div className="grid grid-cols-2 gap-2">
@@ -1097,88 +1113,86 @@
                               <input className="input-glass" placeholder="Last name" value={newContact.last_name} onChange={e => setNewContact({...newContact, last_name: e.target.value})} />
                             </div>
                             <div className="grid grid-cols-2 gap-2">
-                              <input className="input-glass" placeholder="Email" value={newContact.email} onChange={e => setNewContact({...newContact, email: e.target.value})} />
-                              <input className="input-glass" placeholder="Phone" value={newContact.phone} onChange={e => setNewContact({...newContact, phone: e.target.value})} />
+                              <input className="input-glass" placeholder="Email (optional)" value={newContact.email} onChange={e => setNewContact({...newContact, email: e.target.value})} />
+                              <input className="input-glass" placeholder="Phone (optional)" value={newContact.phone} onChange={e => setNewContact({...newContact, phone: e.target.value})} />
                             </div>
-                            <div className="flex gap-2">
-                              <button type="button" onClick={createNewContactForTransaction} className="btn-primary text-xs">Create Client</button>
-                              <button type="button" onClick={() => setShowNewContact(false)} className="btn-secondary text-xs">Cancel</button>
-                            </div>
+                            <button type="button" onClick={() => { createNewContactForTransaction(); setQuickName(newContact.first_name + ' ' + newContact.last_name); }} className="btn-primary text-xs">Create & Select</button>
                           </div>
                         )}
                       </div>
                     ) : (
                       <div className="flex items-center gap-2">
-                        <span className="input-glass flex-1 py-2">{selectedContactName ? selectedContactName.first_name + ' ' + selectedContactName.last_name : 'Selected'}</span>
-                        <button type="button" onClick={() => setFormData({...formData, contact_id: ''})} className="btn-secondary text-xs">Change</button>
+                        <span className="input-glass flex-1 py-2 font-medium">{selectedContactName ? selectedContactName.first_name + ' ' + selectedContactName.last_name : quickName}</span>
+                        <button type="button" onClick={() => { setFormData({...formData, contact_id: ''}); setQuickName(''); }} className="btn-secondary text-xs">Change</button>
                       </div>
                     )}
                   </div>
 
-                  {/* Transaction type */}
-                  <div className="grid grid-cols-2 gap-3">
-                    <div>
-                      <label className="text-sm text-secondary mb-2 block">Type</label>
-                      <select value={formData.transaction_type} onChange={e => setFormData({...formData, transaction_type: e.target.value})} className="input-glass w-full">
-                        <option value="listing">Listing</option>
-                        <option value="buyer">Buyer</option>
-                        <option value="dual">Dual</option>
-                        <option value="referral">Referral</option>
-                        <option value="lease">Lease</option>
-                      </select>
-                    </div>
-                    <div>
-                      <label className="text-sm text-secondary mb-2 block">Status</label>
-                      <select value={formData.status} onChange={e => setFormData({...formData, status: e.target.value})} className="input-glass w-full">
-                        {STATUSES.map(s => <option key={s.id} value={s.id}>{s.label}</option>)}
-                      </select>
-                    </div>
-                  </div>
-
                   {/* Property address */}
                   <div>
-                    <label className="text-sm text-secondary mb-2 block">Property Address</label>
+                    <label className="text-sm text-secondary mb-1 block">Property Address</label>
                     <input className="input-glass w-full" placeholder="123 Main St" value={formData.address} onChange={e => setFormData({...formData, address: e.target.value})} required />
                   </div>
-                  <div className="grid grid-cols-3 gap-3">
+                  <div className="grid grid-cols-3 gap-2">
                     <input className="input-glass" placeholder="City" value={formData.city} onChange={e => setFormData({...formData, city: e.target.value})} />
                     <input className="input-glass" placeholder="State" value={formData.state} onChange={e => setFormData({...formData, state: e.target.value})} />
                     <input className="input-glass" placeholder="Zip" value={formData.zip} onChange={e => setFormData({...formData, zip: e.target.value})} />
                   </div>
 
-                  {/* Pricing */}
-                  <div className="grid grid-cols-3 gap-3">
-                    <div><label className="text-sm text-secondary mb-1 block">List Price</label><input type="number" className="input-glass w-full" placeholder="300000" value={formData.list_price} onChange={e => setFormData({...formData, list_price: e.target.value})} /></div>
-                    <div><label className="text-sm text-secondary mb-1 block">Contract Price</label><input type="number" className="input-glass w-full" placeholder="295000" value={formData.contract_price} onChange={e => setFormData({...formData, contract_price: e.target.value})} /></div>
-                    <div><label className="text-sm text-secondary mb-1 block">Commission %</label><input type="number" step="0.1" className="input-glass w-full" placeholder="2.5" value={formData.commission_rate} onChange={e => setFormData({...formData, commission_rate: e.target.value})} /></div>
+                  {/* Type — default to listing */}
+                  <div>
+                    <label className="text-sm text-secondary mb-1 block">Type</label>
+                    <div className="flex gap-2">
+                      {['listing','buyer','dual'].map(t => (
+                        <button key={t} type="button" onClick={() => setFormData({...formData, transaction_type: t})}
+                          className="px-4 py-1.5 rounded-lg text-xs font-medium transition-all"
+                          style={formData.transaction_type === t ? {background:'#7F1330', color:'#fff'} : {background:'#FFF5F0', color:'#7A5A5A'}}>
+                          {t.charAt(0).toUpperCase() + t.slice(1)}
+                        </button>
+                      ))}
+                    </div>
                   </div>
 
-                  {/* Dates */}
-                  <div className="grid grid-cols-2 gap-3">
-                    <div><label className="text-sm text-secondary mb-1 block">Contract Date</label><input type="date" className="input-glass w-full" value={formData.contract_date} onChange={e => setFormData({...formData, contract_date: e.target.value})} /></div>
-                    <div><label className="text-sm text-secondary mb-1 block">Closing Date</label><input type="date" className="input-glass w-full" value={formData.closing_date} onChange={e => setFormData({...formData, closing_date: e.target.value})} /></div>
-                  </div>
-
-                  {/* Other parties */}
-                  <div className="grid grid-cols-2 gap-3">
-                    <div><label className="text-sm text-secondary mb-1 block">Title Company</label><input className="input-glass w-full" value={formData.title_company} onChange={e => setFormData({...formData, title_company: e.target.value})} /></div>
-                    <div><label className="text-sm text-secondary mb-1 block">Lender</label><input className="input-glass w-full" value={formData.lender_name} onChange={e => setFormData({...formData, lender_name: e.target.value})} /></div>
-                  </div>
-                  <div className="grid grid-cols-2 gap-3">
-                    <div><label className="text-sm text-secondary mb-1 block">Co-Agent Name</label><input className="input-glass w-full" value={formData.co_agent_name} onChange={e => setFormData({...formData, co_agent_name: e.target.value})} /></div>
-                    <div><label className="text-sm text-secondary mb-1 block">Co-Agent Brokerage</label><input className="input-glass w-full" value={formData.co_agent_brokerage} onChange={e => setFormData({...formData, co_agent_brokerage: e.target.value})} /></div>
-                  </div>
-
-                  <div><label className="text-sm text-secondary mb-1 block">Notes</label><textarea className="input-glass w-full" rows="2" value={formData.notes} onChange={e => setFormData({...formData, notes: e.target.value})} /></div>
+                  {/* More details — collapsible */}
+                  <button type="button" onClick={() => setShowMore(!showMore)} className="text-xs w-full text-left py-2" style={{color:'#7F1330'}}>
+                    {showMore ? '▾ Less details' : '▸ More details (price, dates, parties...)'}
+                  </button>
+                  {showMore && (
+                    <div className="space-y-3 pt-1">
+                      <div className="grid grid-cols-2 gap-3">
+                        <div>
+                          <label className="text-sm text-secondary mb-1 block">Status</label>
+                          <select value={formData.status} onChange={e => setFormData({...formData, status: e.target.value})} className="input-glass w-full">
+                            {STATUSES.map(s => <option key={s.id} value={s.id}>{s.label}</option>)}
+                          </select>
+                        </div>
+                        <div><label className="text-sm text-secondary mb-1 block">List Price</label><input type="number" className="input-glass w-full" placeholder="300000" value={formData.list_price} onChange={e => setFormData({...formData, list_price: e.target.value})} /></div>
+                      </div>
+                      <div className="grid grid-cols-3 gap-3">
+                        <div><label className="text-xs text-secondary mb-1 block">Contract Price</label><input type="number" className="input-glass w-full" placeholder="295000" value={formData.contract_price} onChange={e => setFormData({...formData, contract_price: e.target.value})} /></div>
+                        <div><label className="text-xs text-secondary mb-1 block">Commission %</label><input type="number" step="0.1" className="input-glass w-full" placeholder="2.5" value={formData.commission_rate} onChange={e => setFormData({...formData, commission_rate: e.target.value})} /></div>
+                        <div><label className="text-xs text-secondary mb-1 block">Closing Date</label><input type="date" className="input-glass w-full" value={formData.closing_date} onChange={e => setFormData({...formData, closing_date: e.target.value})} /></div>
+                      </div>
+                      <div className="grid grid-cols-2 gap-3">
+                        <div><label className="text-xs text-secondary mb-1 block">Title Company</label><input className="input-glass w-full" value={formData.title_company} onChange={e => setFormData({...formData, title_company: e.target.value})} /></div>
+                        <div><label className="text-xs text-secondary mb-1 block">Lender</label><input className="input-glass w-full" value={formData.lender_name} onChange={e => setFormData({...formData, lender_name: e.target.value})} /></div>
+                      </div>
+                      <div className="grid grid-cols-2 gap-3">
+                        <div><label className="text-xs text-secondary mb-1 block">Co-Agent</label><input className="input-glass w-full" value={formData.co_agent_name} onChange={e => setFormData({...formData, co_agent_name: e.target.value})} /></div>
+                        <div><label className="text-xs text-secondary mb-1 block">Co-Agent Brokerage</label><input className="input-glass w-full" value={formData.co_agent_brokerage} onChange={e => setFormData({...formData, co_agent_brokerage: e.target.value})} /></div>
+                      </div>
+                    </div>
+                  )}
 
                   <div className="flex gap-3 pt-2">
                     <button type="button" onClick={() => setShowAddForm(false)} className="btn-secondary flex-1">Cancel</button>
-                    <button type="submit" className="btn-primary flex-1">Create Transaction</button>
+                    <button type="submit" className="btn-primary flex-1">Start Transaction</button>
                   </div>
                 </form>
               </div>
             </div>
-          )}
+            );
+          })()}
 
           {/* TRANSACTION LIST */}
           <div className="flex-1 overflow-y-auto">
